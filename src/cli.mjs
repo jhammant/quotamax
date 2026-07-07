@@ -204,6 +204,17 @@ async function agent() {
   } catch (e) {
     payload = { ok: false, error: e.message, headroom: 'unknown', advice: null };
   }
+  if (flags.has('--line')) {
+    // Hook mode: one compact context line, silent on failure, always exit 0.
+    if (payload.ok) {
+      const a = payload.advice;
+      const d = payload.weekly.resetsInMinutes != null ? (payload.weekly.resetsInMinutes / 1440).toFixed(1) : '?';
+      console.log(
+        `Claude quota headroom: ${payload.headroom} — cap parallel subagents at ${a.parallelism}, model tier ${a.modelTier}, thinking ${a.thinkingEffort} (session ${payload.session.percentUsed}%, weekly ${payload.weekly.percentUsed}%, resets in ${d}d)`,
+      );
+    }
+    process.exit(0);
+  }
   if (flags.has('--quiet')) {
     console.log(payload.headroom);
   } else {
