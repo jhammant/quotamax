@@ -1,0 +1,42 @@
+{
+  "name": "quotamax",
+  "version": "0.1.0",
+  "description": "Claude Code quota intelligence: live limits, burn-rate forecasts, API-cost equivalence, and machine-readable capacity advice for agents",
+  "type": "module",
+  "bin": {
+    "quotamax": "./src/cli.mjs"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "quota",
+    "usage",
+    "rate-limit",
+    "burn-rate",
+    "forecast",
+    "tokens",
+    "agent",
+    "cli"
+  ],
+  "author": "Jonathan Hammant",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jhammant/quotamax.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jhammant/quotamax/issues"
+  },
+  "homepage": "https://github.com/jhammant/quotamax#readme"
+}
