@@ -13,7 +13,9 @@ export const PRIORITIES_PATH = path.join(CONFIG_DIR, 'priorities.json');
 export function loadPriorities() {
   try {
     const p = JSON.parse(fs.readFileSync(PRIORITIES_PATH, 'utf8'));
-    return { reservations: p.reservations ?? [], priorities: p.priorities ?? [] };
+    // Preserve unknown keys (e.g. override) — earlier this stripped them, so
+    // any reserve/prioritize write silently erased the manual override.
+    return { ...p, reservations: p.reservations ?? [], priorities: p.priorities ?? [] };
   } catch {
     return { reservations: [], priorities: [] };
   }
@@ -62,4 +64,31 @@ export function deprioritize(name) {
   p.priorities = p.priorities.filter((r) => r.name !== name);
   savePriorities(p);
   return p;
+}
+
+// Manual headroom override: force the advice level (e.g. run everything on a
+// simpler model for the next few hours) regardless of measured quota.
+export function setOverride(level, hours, note) {
+  const p = loadPriorities();
+  p.override = {
+    level,
+    note: note ?? null,
+    until: hours ? new Date(Date.now() + hours * 3.6e6).toISOString() : null,
+    createdAt: new Date().toISOString(),
+  };
+  savePriorities(p);
+  return p.override;
+}
+
+export function clearOverride() {
+  const p = loadPriorities();
+  delete p.override;
+  savePriorities(p);
+}
+
+export function activeOverride(p = loadPriorities(), nowMs = Date.now()) {
+  const o = p.override;
+  if (!o) return null;
+  if (o.until && Date.parse(o.until) <= nowMs) return null;
+  return o;
 }

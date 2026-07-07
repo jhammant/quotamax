@@ -87,6 +87,21 @@ describe('advise with reservations', () => {
   });
 });
 
+describe('advise with manual override', () => {
+  test('override pins the level and labels the rationale', () => {
+    const a = advise(quota({ session: 10, weekly: 20 }), NOW, 0, { level: 'constrained' });
+    assert.equal(a.headroom, 'constrained');
+    assert.equal(a.advice.modelTier, 'mid');
+    assert.ok(a.advice.rationale.startsWith('MANUAL OVERRIDE'));
+    assert.equal(a.override.level, 'constrained');
+  });
+
+  test('unknown override level is ignored', () => {
+    const a = advise(quota({ session: 10, weekly: 20 }), NOW, 0, { level: 'bogus' });
+    assert.equal(a.headroom, 'abundant');
+  });
+});
+
 describe('exitCodeFor', () => {
   test('maps levels to shell-friendly codes', () => {
     assert.equal(exitCodeFor('abundant'), 0);

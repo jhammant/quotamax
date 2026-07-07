@@ -10,7 +10,14 @@ import { metricsFor } from './trends.mjs';
 
 const LEVELS = ['abundant', 'comfortable', 'constrained', 'critical'];
 
-export function advise(quota, nowMs = Date.now(), reservedPct = 0) {
+export const ADVICE_BY_LEVEL = {
+  abundant: { parallelism: 8, modelTier: 'top', thinkingEffort: 'xhigh' },
+  comfortable: { parallelism: 4, modelTier: 'top', thinkingEffort: 'high' },
+  constrained: { parallelism: 2, modelTier: 'mid', thinkingEffort: 'medium' },
+  critical: { parallelism: 1, modelTier: 'economy', thinkingEffort: 'low' },
+};
+
+export function advise(quota, nowMs = Date.now(), reservedPct = 0, override = null) {
   const m = metricsFor(quota, nowMs);
   const session = quota.session.percent;
   // Reserved quota is treated as already spent: headroom shrinks accordingly.
@@ -26,14 +33,11 @@ export function advise(quota, nowMs = Date.now(), reservedPct = 0) {
   else if (session >= 40 || m.paceDelta > -10) level = 'comfortable';
   else level = 'abundant'; // cool session window AND well behind weekly pace
 
-  const advice = {
-    abundant: { parallelism: 8, modelTier: 'top', thinkingEffort: 'xhigh' },
-    comfortable: { parallelism: 4, modelTier: 'top', thinkingEffort: 'high' },
-    constrained: { parallelism: 2, modelTier: 'mid', thinkingEffort: 'medium' },
-    critical: { parallelism: 1, modelTier: 'economy', thinkingEffort: 'low' },
-  }[level];
+  if (override && ADVICE_BY_LEVEL[override.level]) level = override.level;
+  const advice = ADVICE_BY_LEVEL[level];
 
   const rationale =
+    (override ? `MANUAL OVERRIDE to "${override.level}"${override.until ? ` until ${new Date(override.until).toLocaleTimeString()}` : ''} — measured: ` : '') +
     `session window ${session}% used` +
     (sessionResetMin != null ? ` (resets in ${sessionResetMin}m)` : '') +
     `; weekly ${quota.weekly.percent}% used` +
@@ -47,6 +51,7 @@ export function advise(quota, nowMs = Date.now(), reservedPct = 0) {
   return {
     ok: true,
     stale: quota.stale ?? false,
+    override: override ? { level: override.level, until: override.until ?? null } : null,
     session: { percentUsed: session, resetsInMinutes: sessionResetMin },
     weekly: {
       percentUsed: quota.weekly.percent,

@@ -17,7 +17,9 @@ import { advise, exitCodeFor } from './agent.mjs';
 import {
   loadPriorities, activeReservations, reservedPercent,
   reserve, unreserve, prioritize, deprioritize, PRIORITIES_PATH,
+  setOverride, clearOverride, activeOverride,
 } from './priorities.mjs';
+import { ADVICE_BY_LEVEL } from './agent.mjs';
 
 const args = process.argv.slice(2);
 const flags = new Set(args.filter((a) => a.startsWith('--')));
@@ -225,7 +227,10 @@ async function agent() {
   let payload;
   try {
     const pri = loadPriorities();
-    payload = advise(await getQuota(), Date.now(), reservedPercent(pri));
+    // One-shot: `quotamax agent constrained` forces the level for this call only.
+    const oneShot = args.filter((a) => !a.startsWith('--'))[1];
+    const override = ADVICE_BY_LEVEL[oneShot] ? { level: oneShot } : activeOverride(pri);
+    payload = advise(await getQuota(), Date.now(), reservedPercent(pri), override);
     payload.reservations = activeReservations(pri);
     payload.priorities = pri.priorities;
   } catch (e) {
@@ -279,6 +284,22 @@ try {
       } catch { /* no live reset time: reservation persists until removed */ }
       reserve({ percent: Number(pct), name, until });
       console.log(`reserved ${pct}% of the weekly quota for "${name}"${until ? ` until ${new Date(until).toLocaleString()}` : ''}`);
+      break;
+    }
+    case 'override': {
+      const [, level, hours] = args.filter((a) => !a.startsWith('--'));
+      if (level === 'clear') {
+        clearOverride();
+        console.log('override cleared — advice follows measured quota again.');
+      } else if (ADVICE_BY_LEVEL[level]) {
+        const o = setOverride(level, hours ? Number(hours) : null);
+        const a = ADVICE_BY_LEVEL[level];
+        console.log(`advice pinned to "${level}"${o.until ? ` until ${new Date(o.until).toLocaleString()}` : ' until cleared'}:`);
+        console.log(`  ≤${a.parallelism} parallel subagents · model tier ${a.modelTier} · thinking ${a.thinkingEffort}`);
+      } else {
+        console.error('usage: quotamax override <abundant|comfortable|constrained|critical|clear> [hours]');
+        process.exit(1);
+      }
       break;
     }
     case 'unreserve':
