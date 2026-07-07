@@ -32,6 +32,13 @@ function fmtReset(iso) {
   return `resets ${new Date(iso).toLocaleString()} (in ${h < 48 ? h.toFixed(1) + 'h' : (h / 24).toFixed(1) + 'd'})`;
 }
 
+// Cached data under ~30 min is business as usual; only genuinely old data warns.
+function cachedNote(quota) {
+  if (!quota.stale) return '';
+  const min = Math.round((quota.cacheAgeMs ?? 0) / 60e3);
+  return min > 30 ? `  (⚠ data ${min}m old: ${quota.staleReason})` : `  (cached ${min}m ago)`;
+}
+
 function weekPoints(quota) {
   const resetMs = Date.parse(quota.weekly.resetsAt) || Date.now() + 168 * HOUR;
   const weekStart = resetMs - 168 * HOUR;
@@ -52,7 +59,7 @@ async function status() {
     console.log(JSON.stringify({ quota, metrics: m }, null, 2));
     return;
   }
-  console.log(`quotamax — plan: ${quota.subscription ?? 'unknown'}${quota.stale ? `  (⚠ stale: ${quota.staleReason})` : ''}\n`);
+  console.log(`quotamax — plan: ${quota.subscription ?? 'unknown'}${cachedNote(quota)}\n`);
   console.log(`  5h session   ${bar(quota.session.percent)}  ${fmtReset(quota.session.resetsAt)}`);
   console.log(`  weekly (all) ${bar(quota.weekly.percent)}  ${fmtReset(quota.weekly.resetsAt)}`);
   for (const s of quota.scoped) {
@@ -74,7 +81,7 @@ async function trend() {
     console.log(JSON.stringify({ quota, stats: s, comparison: cmp }, null, 2));
     return;
   }
-  console.log(`quotamax — week trend & forecast${quota.stale ? '  (⚠ stale quota)' : ''}`);
+  console.log(`quotamax — week trend & forecast${cachedNote(quota)}`);
   console.log(`day ${(s.elapsedH / 24).toFixed(1)} of 7 · resets ${new Date(resetMs).toLocaleString()}\n`);
   console.log(renderChart(points, resetMs, now, s.ratePerDay));
   console.log('');

@@ -1,16 +1,36 @@
 // Live quota from the internal endpoint that Claude Code's /usage command
 // uses. Undocumented and unversioned: shapes may change, and it rate-limits
-// hard if polled aggressively — hence the shared cache and snapshot fallback.
+// hard if polled aggressively. Every CLI invocation is a fresh process, so
+// caching is two-level: in-memory for hot loops, on-disk so consecutive runs
+// (and other tools on this machine) share one upstream cadence. After a 429,
+// a persisted cooldown stops all processes retrying while the throttle decays.
+import fs from 'node:fs';
+import path from 'node:path';
 import { readOAuth } from './credentials.mjs';
-import { readSnapshots, recordSnapshot } from './store.mjs';
+import { STATE_DIR, readSnapshots, recordSnapshot } from './store.mjs';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
-const CACHE_TTL_MS = 120_000;
+const MEM_TTL_MS = 60_000;
+const DISK_TTL_MS = 150_000;
+const COOLDOWN_MS = 10 * 60_000;
 const STALE_MAX_MS = 2 * 3.6e6;
 let memCache = { at: 0, value: null };
 
+const DISK_CACHE = path.join(STATE_DIR, 'quota-cache.json');
+const COOLDOWN = path.join(STATE_DIR, 'quota-cooldown.json');
+
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
 export function resetQuotaCache() {
   memCache = { at: 0, value: null };
+  fs.rmSync(DISK_CACHE, { force: true });
+  fs.rmSync(COOLDOWN, { force: true });
 }
 
 async function fetchUsage(accessToken) {
@@ -55,22 +75,56 @@ export function normalize(usage, subscription) {
   };
 }
 
-// Cached live read; on failure falls back to the last recorded snapshot
-// (< 2h old, marked stale). Successful live reads are recorded as snapshots,
-// which is how the trend history accumulates with zero daemons.
+function withAge(quota, fetchedAtMs) {
+  return { ...quota, cacheAgeMs: Math.max(0, Date.now() - fetchedAtMs) };
+}
+
+// Newest usable data when a live read isn't possible: disk cache or last
+// snapshot, whichever is fresher, capped at 2h and marked stale.
+function staleFallback(err, disk) {
+  const candidates = [];
+  if (disk?.quota) candidates.push({ at: disk.fetchedAt, quota: disk.quota });
+  const lastSnap = readSnapshots().at(-1);
+  if (lastSnap) candidates.push({ at: Date.parse(lastSnap.at), quota: lastSnap });
+  const best = candidates.sort((a, b) => b.at - a.at)[0];
+  if (best && Date.now() - best.at < STALE_MAX_MS) {
+    return { ...withAge(best.quota, best.at), stale: true, staleReason: err.message };
+  }
+  throw err;
+}
+
+// Successful live reads are recorded as snapshots, which is how the trend
+// history accumulates with zero daemons.
 export async function getQuota() {
-  if (memCache.value && Date.now() - memCache.at < CACHE_TTL_MS) return memCache.value;
+  const now = Date.now();
+  if (memCache.value && now - memCache.at < MEM_TTL_MS) return memCache.value;
+
+  const disk = readJson(DISK_CACHE);
+  if (disk?.quota && now - disk.fetchedAt < DISK_TTL_MS) {
+    const quota = withAge(disk.quota, disk.fetchedAt);
+    memCache = { at: now, value: quota };
+    return quota;
+  }
+
+  const cooldown = readJson(COOLDOWN);
+  if (cooldown && now < cooldown.until) {
+    return staleFallback(
+      new Error(`endpoint in 429 cooldown until ${new Date(cooldown.until).toLocaleTimeString()}`),
+      disk,
+    );
+  }
+
   const oauth = readOAuth();
   try {
     const quota = normalize(await fetchUsage(oauth.accessToken), oauth.subscriptionType);
-    memCache = { at: Date.now(), value: quota };
+    fs.writeFileSync(DISK_CACHE, JSON.stringify({ fetchedAt: now, quota }));
+    memCache = { at: now, value: quota };
     recordSnapshot(quota);
     return quota;
   } catch (e) {
-    const last = readSnapshots().at(-1);
-    if (last && Date.now() - Date.parse(last.at) < STALE_MAX_MS) {
-      return { ...last, stale: true, staleReason: e.message };
+    if (e.status === 429) {
+      fs.writeFileSync(COOLDOWN, JSON.stringify({ until: now + COOLDOWN_MS, reason: e.message }));
     }
-    throw e;
+    return staleFallback(e, disk);
   }
 }
