@@ -33,7 +33,8 @@ function bar(percent, width = 28) {
 function fmtReset(iso) {
   if (!iso || !Number.isFinite(Date.parse(iso))) return 'window not started';
   const h = (Date.parse(iso) - Date.now()) / HOUR;
-  return `resets ${new Date(iso).toLocaleString()} (in ${h < 48 ? h.toFixed(1) + 'h' : (h / 24).toFixed(1) + 'd'})`;
+  const when = new Date(iso).toLocaleString(undefined, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return `resets ${when} (${h < 48 ? h.toFixed(1) + 'h' : (h / 24).toFixed(1) + 'd'})`;
 }
 
 // Cached data under ~30 min is business as usual; only genuinely old data warns.
