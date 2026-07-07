@@ -11,7 +11,7 @@
 import { getQuota } from './quota.mjs';
 import { readSnapshots, loadConfig } from './store.mjs';
 import { loadUsage, byDayModel, dailyOutput } from './transcripts.mjs';
-import { burnStats, metricsFor, renderChart, usageComparison, sparkline, weekdayProfile, shapedProjection } from './trends.mjs';
+import { burnStats, metricsFor, renderChart, usageComparison, sparkline, weekdayProfile, shapedProjection, todayVsTypical } from './trends.mjs';
 import { costUSD, fmtUSD, fmtTokens, priceFor } from './pricing.mjs';
 import { advise, exitCodeFor } from './agent.mjs';
 import {
@@ -93,23 +93,33 @@ async function trend() {
   console.log(`day ${(s.elapsedH / 24).toFixed(1)} of 7 · resets ${new Date(resetMs).toLocaleString()}\n`);
   console.log(renderChart(points, resetMs, now, s.ratePerDay));
   console.log('');
-  console.log(`  now:        ${s.current}% used · expected ${s.expected.toFixed(0)}% · ${s.paceDelta <= 0 ? Math.abs(s.paceDelta).toFixed(0) + ' pts BEHIND pace' : s.paceDelta.toFixed(0) + ' pts AHEAD of pace'}`);
-  console.log(`  burn rate:  ${s.ratePerDay.toFixed(1)} pts/day (recent) · ${s.neededPerDay.toFixed(1)} pts/day would use it all`);
-  const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const abbrev = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const shaped = Math.max(...intensity) - Math.min(...intensity) > 0.3; // meaningful pattern
-  if (s.paceDelta > 0 && s.exhaustsInH != null && s.exhaustsInH < s.remainH) {
-    console.log(`  projection: hits 100% in ~${(s.exhaustsInH / 24).toFixed(1)} days — ${((s.remainH - s.exhaustsInH) / 24).toFixed(1)} days early. Slow down or budget for the gap.`);
-  } else if (shaped) {
-    const expire = Math.max(0, 100 - shapedEnd);
-    console.log(`  projection: ends ~${shapedEnd.toFixed(0)}% by your weekday pattern → ~${expire.toFixed(0)}% expires${shapedEnd >= 99.5 ? '!' : ''} (linear: ${s.projectedEnd.toFixed(0)}%)`);
-    console.log(`  your week:  ${intensity.map((v, i) => `${names[i]} ${v.toFixed(1)}×`).join(' ')}`);
+  const tvt = todayVsTypical(daily, now);
+
+  console.log(`  now:        ${s.current}% of the weekly quota used · a typical week is at ${s.expected.toFixed(0)}% by this point`);
+  if (tvt.ratio != null) {
+    console.log(`  today:      ${fmtTokens(tvt.today)} output tokens so far — ${tvt.ratio.toFixed(1)}× your typical ${names[new Date(now).getUTCDay()]} (${fmtTokens(tvt.typical)})`);
+  }
+  if (shaped) {
+    if (shapedEnd >= 99.5) {
+      console.log(`  forecast:   quota likely runs OUT before the reset — even allowing for your`);
+      console.log(`              usual quiet days. Slow down or budget for the gap.`);
+    } else {
+      const expire = Math.max(0, 100 - shapedEnd);
+      console.log(`  forecast:   ~${shapedEnd.toFixed(0)}% used by the reset IF the rest of the week follows your`);
+      console.log(`              usual rhythm → ~${expire.toFixed(0)}% likely expires unused`);
+      console.log(`              (if today's pace continued nonstop: ${s.projectedEnd.toFixed(0)}%)`);
+    }
+    console.log(`  rhythm:     ${intensity.map((v, i) => `${abbrev[i]} ${v.toFixed(1)}×`).join(' ')}`);
+  } else if (s.paceDelta > 0 && s.exhaustsInH != null && s.exhaustsInH < s.remainH) {
+    console.log(`  forecast:   quota runs OUT ~${((s.remainH - s.exhaustsInH) / 24).toFixed(1)} days before the reset at this pace`);
+    console.log(`              (in ~${(s.exhaustsInH / 24).toFixed(1)} days) — slow down or budget for the gap`);
   } else {
-    console.log(`  projection: week ends at ~${s.projectedEnd.toFixed(0)}% → ~${s.wouldExpire.toFixed(0)}% of the quota would expire unused`);
+    console.log(`  forecast:   ~${s.projectedEnd.toFixed(0)}% used by the reset → ~${s.wouldExpire.toFixed(0)}% likely expires unused`);
   }
-  if (cmp.pctDiff != null) {
-    const dir = cmp.pctDiff >= 0 ? `${cmp.pctDiff.toFixed(0)}% MORE` : `${Math.abs(cmp.pctDiff).toFixed(0)}% LESS`;
-    console.log(`  vs usual:   ${fmtTokens(cmp.thisAvg)} out-tokens/day vs ${fmtTokens(cmp.priorAvg)} (3-wk avg) → ${dir}`);
-  }
+  console.log(`  to use all: a steady ${s.neededPerDay.toFixed(1)} pts/day, every day incl. weekends (recent: ${s.ratePerDay.toFixed(1)})`);
 }
 
 async function history() {

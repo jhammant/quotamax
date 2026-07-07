@@ -142,6 +142,19 @@ export function shapedProjection(current, ratePerDay, intensity, nowMs, resetsAt
   return Math.min(100, v);
 }
 
+/** Today's output tokens vs the average of the same weekday in history. */
+export function todayVsTypical(dailyOut, nowMs = Date.now()) {
+  const todayKey = new Date(nowMs).toISOString().slice(0, 10);
+  const dow = new Date(nowMs).getUTCDay();
+  const past = [];
+  for (const [day, v] of Object.entries(dailyOut)) {
+    if (day !== todayKey && new Date(day + 'T12:00:00Z').getUTCDay() === dow) past.push(v);
+  }
+  const typical = past.length >= 2 ? past.reduce((a, b) => a + b, 0) / past.length : null;
+  const today = dailyOut[todayKey] ?? 0;
+  return { today, typical, ratio: typical > 0 ? today / typical : null };
+}
+
 export function sparkline(values, width = values.length) {
   const blocks = '▁▂▃▄▅▆▇█';
   const max = Math.max(...values, 1);

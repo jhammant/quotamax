@@ -61,6 +61,9 @@ usage endpoint and is never logged or stored.
 | `quotamax history` | Daily sparkline + weekly table of tokens and API-cost equivalents |
 | `quotamax costs` | Per-model API list-price equivalence over 7/30/90 days, with cache-token pricing |
 | `quotamax agent` | JSON capacity advice for orchestrators (below) |
+| `quotamax reserve 20 my-project` | Hold back 20% of the weekly quota for a project (until the reset) |
+| `quotamax prioritize my-project` | Mark a project important — exported for burners/miners to favor |
+| `quotamax priorities` | Show active reservations and priority projects |
 
 Every command accepts `--json` for machine output.
 
@@ -89,8 +92,26 @@ can I push right now?*
   window, or ahead of weekly pace); `critical` → minimum footprint.
 - **Exit codes** for shell gating: `0` abundant/comfortable, `3` constrained,
   `4` critical, `5` quota unreadable. `--quiet` prints just the headroom word.
-- Reads are cached (120s) and fall back to the last snapshot when the endpoint
-  is rate-limited, so it's safe to call at agent-loop frequency.
+- **Reservations count as spent**: `quotamax reserve 20 launch-prep` shrinks
+  the headroom every agent sees, so autonomous work can't eat quota you're
+  saving. External burners can read `~/.config/quotamax/priorities.json`.
+- Reads are cached in memory *and* on disk (shared across processes), with a
+  persisted cooldown after any 429 — safe to call at agent-loop frequency.
+- `--line` prints a single context line (or nothing on failure, exit 0) —
+  built for Claude Code SessionStart hooks, so every session starts knowing
+  its capacity:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{
+      "type": "command",
+      "command": "quotamax agent --line 2>/dev/null || true",
+      "timeout": 10
+    }]}]
+  }
+}
+```
 
 Drop this in your `CLAUDE.md` / agent system prompt:
 
