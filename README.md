@@ -23,11 +23,18 @@ day 1.6 of 7 · resets 14/07/2026, 08:59:59
       Tue     Wed     Thu     Fri     Sat     Sun     Mon
       █ actual   ░ projected   · linear pace   (week runs reset→reset)
 
-  now:        3% used · expected 8% · 5 pts BEHIND pace
-  burn rate:  5.7 pts/day (recent) · 15.1 pts/day would use it all
-  projection: week ends at ~40% → ~60% of the quota would expire unused
-  vs usual:   651k output tokens/day this week vs 893k/day prior 3 weeks → 27% LESS than usual
+  now:        9% of the weekly quota used · a typical week is at 9% by this point
+  today:      866k output tokens so far — 0.9× your typical Tuesday (990k)
+  forecast:   ~71% used by the reset IF the rest of the week follows your
+              usual rhythm → ~29% likely expires unused
+              (if today's pace continued nonstop: 100%)
+  rhythm:     Sun 0.6× Mon 1.4× Tue 1.5× Wed 1.3× Thu 0.9× Fri 1.1× Sat 0.1×
+  to use all: a steady 14.2 pts/day, every day incl. weekends (recent: 15.9)
 ```
+
+The forecast is **weekday-aware**: it learns each weekday's share of your usage
+from months of history, so a heavy Tuesday doesn't fool it into predicting
+you'll burn through the weekend.
 
 ```text
 $ quotamax costs
