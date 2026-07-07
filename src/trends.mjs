@@ -96,6 +96,52 @@ export function usageComparison(dailyOut, resetsAtMs, nowMs) {
   };
 }
 
+/**
+ * Relative usage intensity per weekday (index 0=Sun..6=Sat, mean 1.0),
+ * from per-day output tokens. Days with no data count as zeros for observed
+ * weekdays; a weekday never observed gets intensity 1 (no evidence).
+ */
+export function weekdayProfile(dailyOut, nowMs = Date.now(), weeks = 8) {
+  const totals = Array(7).fill(0);
+  const counts = Array(7).fill(0);
+  const cutoff = new Date(nowMs - weeks * 7 * 24 * HOUR).toISOString().slice(0, 10);
+  const today = new Date(nowMs).toISOString().slice(0, 10);
+  for (const [day, v] of Object.entries(dailyOut)) {
+    if (day < cutoff || day >= today) continue; // exclude partial today
+    const dow = new Date(day + 'T12:00:00Z').getUTCDay();
+    totals[dow] += v;
+    counts[dow]++;
+  }
+  const avgs = totals.map((t, i) => (counts[i] ? t / counts[i] : null));
+  const seen = avgs.filter((a) => a != null);
+  if (seen.length < 3) return Array(7).fill(1); // not enough history: flat
+  const mean = seen.reduce((a, b) => a + b, 0) / seen.length;
+  if (mean <= 0) return Array(7).fill(1);
+  return avgs.map((a) => (a == null ? 1 : a / mean));
+}
+
+/**
+ * Week-end projection that walks the remaining days weighting the burn rate
+ * by each weekday's observed intensity. With a flat profile this equals the
+ * linear projection.
+ */
+export function shapedProjection(current, ratePerDay, intensity, nowMs, resetsAtMs) {
+  const todayIntensity = intensity[new Date(nowMs).getDay()];
+  // The observed recent rate happened on today's kind of day; normalize it.
+  const base = todayIntensity > 0.1 ? ratePerDay / todayIntensity : ratePerDay;
+  let v = current;
+  let t = nowMs;
+  while (t < resetsAtMs && v < 100) {
+    const d = new Date(t);
+    const endOfDay = new Date(d);
+    endOfDay.setHours(24, 0, 0, 0);
+    const chunkEnd = Math.min(endOfDay.getTime(), resetsAtMs);
+    v += base * intensity[d.getDay()] * ((chunkEnd - t) / (24 * HOUR));
+    t = chunkEnd;
+  }
+  return Math.min(100, v);
+}
+
 export function sparkline(values, width = values.length) {
   const blocks = '▁▂▃▄▅▆▇█';
   const max = Math.max(...values, 1);

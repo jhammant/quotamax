@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { burnStats, metricsFor, renderChart, usageComparison, sparkline } from '../src/trends.mjs';
+import { burnStats, metricsFor, renderChart, usageComparison, sparkline, weekdayProfile, shapedProjection } from '../src/trends.mjs';
 
 const HOUR = 3.6e6;
 const DAY = 24 * HOUR;
@@ -97,6 +97,57 @@ describe('renderChart', () => {
     assert.ok(out.includes('░'));
     // RESET is a Tuesday → first day label is Tue
     assert.ok(lines[11].trim().startsWith('Tue'));
+  });
+});
+
+describe('weekdayProfile', () => {
+  const day = (t) => new Date(t).toISOString().slice(0, 10);
+  const NOW = Date.parse('2026-07-08T12:00:00Z'); // a Wednesday
+
+  test('uniform history → flat profile of 1s', () => {
+    const daily = {};
+    for (let i = 1; i <= 28; i++) daily[day(NOW - i * DAY)] = 100;
+    const p = weekdayProfile(daily, NOW);
+    for (const v of p) assert.ok(Math.abs(v - 1) < 1e-9);
+  });
+
+  test('weekend-free history → weekend intensity near zero, weekdays above 1', () => {
+    const daily = {};
+    for (let i = 1; i <= 28; i++) {
+      const t = NOW - i * DAY;
+      const dow = new Date(t).getUTCDay();
+      daily[day(t)] = dow === 0 || dow === 6 ? 0 : 700;
+    }
+    const p = weekdayProfile(daily, NOW);
+    assert.ok(p[0] < 0.01 && p[6] < 0.01, `weekend got ${p[0]}, ${p[6]}`);
+    assert.ok(p[1] > 1.2, `Monday got ${p[1]}`);
+  });
+
+  test('insufficient history → flat (no evidence, no distortion)', () => {
+    const p = weekdayProfile({ '2026-07-06': 100 }, NOW);
+    for (const v of p) assert.equal(v, 1);
+  });
+});
+
+describe('shapedProjection', () => {
+  test('flat profile equals the linear projection', () => {
+    const now = WEEK_START + 2 * DAY;
+    const flat = Array(7).fill(1);
+    const shaped = shapedProjection(20, 10, flat, now, RESET);
+    assert.ok(Math.abs(shaped - 70) < 0.5, `got ${shaped}`); // 20 + 10*5
+  });
+
+  test('zero-intensity remaining days add nothing', () => {
+    const now = WEEK_START + 2 * DAY;
+    const dead = Array(7).fill(0);
+    dead[new Date(now).getDay()] = 1; // only today burns
+    const shaped = shapedProjection(20, 10, dead, now, RESET);
+    assert.ok(shaped < 30, `got ${shaped}`); // only the rest of today accrues
+  });
+
+  test('clamps at 100', () => {
+    const shaped = shapedProjection(90, 50, Array(7).fill(1), WEEK_START + DAY, RESET);
+    assert.equal(shaped, 100);
   });
 });
 

@@ -11,9 +11,13 @@
 import { getQuota } from './quota.mjs';
 import { readSnapshots, loadConfig } from './store.mjs';
 import { loadUsage, byDayModel, dailyOutput } from './transcripts.mjs';
-import { burnStats, metricsFor, renderChart, usageComparison, sparkline } from './trends.mjs';
+import { burnStats, metricsFor, renderChart, usageComparison, sparkline, weekdayProfile, shapedProjection } from './trends.mjs';
 import { costUSD, fmtUSD, fmtTokens, priceFor } from './pricing.mjs';
 import { advise, exitCodeFor } from './agent.mjs';
+import {
+  loadPriorities, activeReservations, reservedPercent,
+  reserve, unreserve, prioritize, deprioritize, PRIORITIES_PATH,
+} from './priorities.mjs';
 
 const args = process.argv.slice(2);
 const flags = new Set(args.filter((a) => a.startsWith('--')));
@@ -75,10 +79,13 @@ async function trend() {
   const { points, resetMs } = weekPoints(quota);
   const s = burnStats(points, resetMs, now);
   const cache = await loadUsage({ log: asJson ? () => {} : (msg) => console.log(`  [${msg}]`) });
-  const cmp = usageComparison(dailyOutput(cache), resetMs, now);
+  const daily = dailyOutput(cache);
+  const cmp = usageComparison(daily, resetMs, now);
+  const intensity = weekdayProfile(daily, now);
+  const shapedEnd = shapedProjection(s.current, s.ratePerDay, intensity, now, resetMs);
 
   if (asJson) {
-    console.log(JSON.stringify({ quota, stats: s, comparison: cmp }, null, 2));
+    console.log(JSON.stringify({ quota, stats: s, comparison: cmp, weekdayIntensity: intensity, shapedProjectedEnd: shapedEnd }, null, 2));
     return;
   }
   console.log(`quotamax — week trend & forecast${cachedNote(quota)}`);
@@ -87,8 +94,14 @@ async function trend() {
   console.log('');
   console.log(`  now:        ${s.current}% used · expected ${s.expected.toFixed(0)}% · ${s.paceDelta <= 0 ? Math.abs(s.paceDelta).toFixed(0) + ' pts BEHIND pace' : s.paceDelta.toFixed(0) + ' pts AHEAD of pace'}`);
   console.log(`  burn rate:  ${s.ratePerDay.toFixed(1)} pts/day (recent) · ${s.neededPerDay.toFixed(1)} pts/day would use it all`);
+  const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const shaped = Math.max(...intensity) - Math.min(...intensity) > 0.3; // meaningful pattern
   if (s.paceDelta > 0 && s.exhaustsInH != null && s.exhaustsInH < s.remainH) {
     console.log(`  projection: hits 100% in ~${(s.exhaustsInH / 24).toFixed(1)} days — ${((s.remainH - s.exhaustsInH) / 24).toFixed(1)} days early. Slow down or budget for the gap.`);
+  } else if (shaped) {
+    const expire = Math.max(0, 100 - shapedEnd);
+    console.log(`  projection: week ends at ~${shapedEnd.toFixed(0)}% based on your historical weekday pattern → ~${expire.toFixed(0)}% would expire${shapedEnd >= 99.5 ? ' (may hit 100% before reset)' : ''}  [naive linear: ${s.projectedEnd.toFixed(0)}%]`);
+    console.log(`  your week:  ${intensity.map((v, i) => `${names[i]} ${v.toFixed(1)}×`).join('  ')}`);
   } else {
     console.log(`  projection: week ends at ~${s.projectedEnd.toFixed(0)}% → ~${s.wouldExpire.toFixed(0)}% of the quota would expire unused`);
   }
@@ -200,7 +213,10 @@ async function costs() {
 async function agent() {
   let payload;
   try {
-    payload = advise(await getQuota());
+    const pri = loadPriorities();
+    payload = advise(await getQuota(), Date.now(), reservedPercent(pri));
+    payload.reservations = activeReservations(pri);
+    payload.priorities = pri.priorities;
   } catch (e) {
     payload = { ok: false, error: e.message, headroom: 'unknown', advice: null };
   }
@@ -209,8 +225,11 @@ async function agent() {
     if (payload.ok) {
       const a = payload.advice;
       const d = payload.weekly.resetsInMinutes != null ? (payload.weekly.resetsInMinutes / 1440).toFixed(1) : '?';
+      const res = payload.weekly.reservedPercent > 0
+        ? `, ${payload.weekly.reservedPercent}% reserved for: ${payload.reservations.map((r) => r.name).join(', ')}`
+        : '';
       console.log(
-        `Claude quota headroom: ${payload.headroom} — cap parallel subagents at ${a.parallelism}, model tier ${a.modelTier}, thinking ${a.thinkingEffort} (session ${payload.session.percentUsed}%, weekly ${payload.weekly.percentUsed}%, resets in ${d}d)`,
+        `Claude quota headroom: ${payload.headroom} — cap parallel subagents at ${a.parallelism}, model tier ${a.modelTier}, thinking ${a.thinkingEffort} (session ${payload.session.percentUsed}%, weekly ${payload.weekly.percentUsed}%${res}, resets in ${d}d)`,
       );
     }
     process.exit(0);
@@ -236,8 +255,51 @@ try {
     case 'pricing':
       console.log(JSON.stringify(priceFor(args[1] ?? 'claude-opus-4-8'), null, 2));
       break;
+    case 'reserve': {
+      const [, pct, ...nameParts] = args.filter((a) => !a.startsWith('--'));
+      const name = nameParts.join(' ');
+      if (!Number(pct) || !name) {
+        console.error('usage: quotamax reserve <percent> <name…>   (reserves weekly % until the next reset)');
+        process.exit(1);
+      }
+      let until = null;
+      try {
+        until = (await getQuota()).weekly.resetsAt;
+      } catch { /* no live reset time: reservation persists until removed */ }
+      reserve({ percent: Number(pct), name, until });
+      console.log(`reserved ${pct}% of the weekly quota for "${name}"${until ? ` until ${new Date(until).toLocaleString()}` : ''}`);
+      break;
+    }
+    case 'unreserve':
+      unreserve(args.filter((a) => !a.startsWith('--')).slice(1).join(' '));
+      console.log('removed.');
+      break;
+    case 'prioritize':
+      prioritize(args.filter((a) => !a.startsWith('--')).slice(1).join(' '));
+      console.log('prioritized.');
+      break;
+    case 'deprioritize':
+      deprioritize(args.filter((a) => !a.startsWith('--')).slice(1).join(' '));
+      console.log('removed.');
+      break;
+    case 'priorities': {
+      const p = loadPriorities();
+      if (asJson) {
+        console.log(JSON.stringify({ ...p, activeReservedPercent: reservedPercent(p), path: PRIORITIES_PATH }, null, 2));
+        break;
+      }
+      const act = activeReservations(p);
+      console.log(`quotamax priorities (${PRIORITIES_PATH})\n`);
+      console.log(`  reservations (${reservedPercent(p)}% of weekly quota held back):`);
+      for (const r of act) console.log(`    • ${r.percent}% — ${r.name}${r.until ? ` (until ${new Date(r.until).toLocaleDateString()})` : ''}`);
+      if (!act.length) console.log('    (none)');
+      console.log(`  priority projects:`);
+      for (const r of p.priorities) console.log(`    • ${r.name}${r.note ? ` — ${r.note}` : ''}`);
+      if (!p.priorities.length) console.log('    (none)');
+      break;
+    }
     default:
-      console.log(`Unknown command: ${cmd}\nCommands: status | trend | history | costs | agent [--quiet] | pricing <model>\nFlags: --json`);
+      console.log(`Unknown command: ${cmd}\nCommands: status | trend | history | costs | agent [--quiet|--line] | priorities | reserve <pct> <name> | unreserve <name> | prioritize <name> | deprioritize <name> | pricing <model>\nFlags: --json`);
       process.exit(1);
   }
 } catch (e) {

@@ -66,6 +66,27 @@ describe('advise', () => {
   });
 });
 
+describe('advise with reservations', () => {
+  test('reserved percent shrinks headroom: behind-pace becomes constrained when mostly reserved', () => {
+    // 20% used mid-week is "abundant" (30 pts behind); +55% reserved → effective 75%, 25 ahead → constrained
+    const q = quota({ session: 10, weekly: 20 });
+    assert.equal(advise(q, NOW, 0).headroom, 'abundant');
+    assert.equal(advise(q, NOW, 55).headroom, 'constrained');
+  });
+
+  test('reservation pushing effective weekly to 97+ is critical', () => {
+    assert.equal(advise(quota({ session: 5, weekly: 60 }), NOW, 40).headroom, 'critical');
+  });
+
+  test('payload separates real usage from reservation', () => {
+    const a = advise(quota({ weekly: 20 }), NOW, 15);
+    assert.equal(a.weekly.percentUsed, 20);
+    assert.equal(a.weekly.reservedPercent, 15);
+    assert.equal(a.weekly.effectivePercent, 35);
+    assert.ok(a.advice.rationale.includes('+15% reserved'));
+  });
+});
+
 describe('exitCodeFor', () => {
   test('maps levels to shell-friendly codes', () => {
     assert.equal(exitCodeFor('abundant'), 0);

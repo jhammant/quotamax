@@ -10,10 +10,12 @@ import { metricsFor } from './trends.mjs';
 
 const LEVELS = ['abundant', 'comfortable', 'constrained', 'critical'];
 
-export function advise(quota, nowMs = Date.now()) {
+export function advise(quota, nowMs = Date.now(), reservedPct = 0) {
   const m = metricsFor(quota, nowMs);
   const session = quota.session.percent;
-  const weekly = quota.weekly.percent;
+  // Reserved quota is treated as already spent: headroom shrinks accordingly.
+  const weekly = Math.min(100, quota.weekly.percent + reservedPct);
+  m.paceDelta = weekly - m.expectedPercent;
   const sessionResetMin = quota.session.resetsAt
     ? Math.max(0, Math.round((Date.parse(quota.session.resetsAt) - nowMs) / 60e3))
     : null;
@@ -34,7 +36,9 @@ export function advise(quota, nowMs = Date.now()) {
   const rationale =
     `session window ${session}% used` +
     (sessionResetMin != null ? ` (resets in ${sessionResetMin}m)` : '') +
-    `; weekly ${weekly}% used, ` +
+    `; weekly ${quota.weekly.percent}% used` +
+    (reservedPct > 0 ? ` +${reservedPct}% reserved` : '') +
+    `, ` +
     (m.paceDelta <= 0
       ? `${Math.abs(m.paceDelta).toFixed(0)} pts behind linear pace`
       : `${m.paceDelta.toFixed(0)} pts ahead of linear pace`) +
@@ -45,7 +49,9 @@ export function advise(quota, nowMs = Date.now()) {
     stale: quota.stale ?? false,
     session: { percentUsed: session, resetsInMinutes: sessionResetMin },
     weekly: {
-      percentUsed: weekly,
+      percentUsed: quota.weekly.percent,
+      reservedPercent: reservedPct,
+      effectivePercent: weekly,
       resetsInMinutes: Number.isFinite(Date.parse(quota.weekly.resetsAt))
         ? Math.max(0, Math.round((Date.parse(quota.weekly.resetsAt) - nowMs) / 60e3))
         : null,
