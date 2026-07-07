@@ -100,14 +100,14 @@ async function trend() {
     console.log(`  projection: hits 100% in ~${(s.exhaustsInH / 24).toFixed(1)} days — ${((s.remainH - s.exhaustsInH) / 24).toFixed(1)} days early. Slow down or budget for the gap.`);
   } else if (shaped) {
     const expire = Math.max(0, 100 - shapedEnd);
-    console.log(`  projection: week ends at ~${shapedEnd.toFixed(0)}% based on your historical weekday pattern → ~${expire.toFixed(0)}% would expire${shapedEnd >= 99.5 ? ' (may hit 100% before reset)' : ''}  [naive linear: ${s.projectedEnd.toFixed(0)}%]`);
-    console.log(`  your week:  ${intensity.map((v, i) => `${names[i]} ${v.toFixed(1)}×`).join('  ')}`);
+    console.log(`  projection: ends ~${shapedEnd.toFixed(0)}% by your weekday pattern → ~${expire.toFixed(0)}% expires${shapedEnd >= 99.5 ? '!' : ''} (linear: ${s.projectedEnd.toFixed(0)}%)`);
+    console.log(`  your week:  ${intensity.map((v, i) => `${names[i]} ${v.toFixed(1)}×`).join(' ')}`);
   } else {
     console.log(`  projection: week ends at ~${s.projectedEnd.toFixed(0)}% → ~${s.wouldExpire.toFixed(0)}% of the quota would expire unused`);
   }
   if (cmp.pctDiff != null) {
     const dir = cmp.pctDiff >= 0 ? `${cmp.pctDiff.toFixed(0)}% MORE` : `${Math.abs(cmp.pctDiff).toFixed(0)}% LESS`;
-    console.log(`  vs usual:   ${fmtTokens(cmp.thisAvg)} output tokens/day this week vs ${fmtTokens(cmp.priorAvg)}/day prior 3 weeks → ${dir} than usual`);
+    console.log(`  vs usual:   ${fmtTokens(cmp.thisAvg)} out-tokens/day vs ${fmtTokens(cmp.priorAvg)} (3-wk avg) → ${dir}`);
   }
 }
 
