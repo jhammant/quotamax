@@ -71,6 +71,7 @@ usage endpoint and is never logged or stored.
 | `quotamax reserve 20 my-project` | Hold back 20% of the weekly quota for a project (until the reset) |
 | `quotamax prioritize my-project` | Mark a project important — exported for burners/miners to favor |
 | `quotamax priorities` | Show active reservations and priority projects |
+| `quotamax --version` | Print the installed quotamax version |
 
 Every command accepts `--json` for machine output.
 

@@ -7,7 +7,8 @@
 //   quotamax costs        what your usage would cost as API traffic
 //   quotamax agent        machine-readable capacity advice for agents
 //
-// Global flags: --json (machine output), --quiet (agent: headroom word only)
+// Global flags: --json (machine output), --quiet (agent: headroom word only), --version
+import { readFileSync } from 'node:fs';
 import { getQuota } from './quota.mjs';
 import { readSnapshots, loadConfig } from './store.mjs';
 import { loadUsage, byDayModel, dailyOutput } from './transcripts.mjs';
@@ -26,6 +27,12 @@ const flags = new Set(args.filter((a) => a.startsWith('--')));
 const cmd = args.find((a) => !a.startsWith('--')) ?? 'status';
 const asJson = flags.has('--json');
 const HOUR = 3.6e6;
+const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+
+if (flags.has('--version') || args.includes('-v')) {
+  console.log(VERSION);
+  process.exit(0);
+}
 
 function bar(percent, width = 28) {
   const filled = Math.round((Math.min(percent, 100) / 100) * width);
