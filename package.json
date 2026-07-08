@@ -1,10 +1,10 @@
 {
   "name": "quotamax",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Claude Code quota intelligence: live limits, burn-rate forecasts, API-cost equivalence, and machine-readable capacity advice for agents",
   "type": "module",
   "bin": {
-    "quotamax": "./src/cli.mjs"
+    "quotamax": "src/cli.mjs"
   },
   "files": [
     "src",
