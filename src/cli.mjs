@@ -62,6 +62,7 @@ function renderProviderLines(providers, indent = '    ') {
     for (const l of p.limits) {
       out.push(`${indent}${dot} ${p.label} ${l.label}: ${bar(l.percent, 20)}  ${fmtReset(l.resetsAt)}${l.surplus ? '  ⚠ surplus expiring' : ''}`);
     }
+    if (p.note) out.push(`${indent}  ↳ ${p.note}`);
   }
   return out;
 }

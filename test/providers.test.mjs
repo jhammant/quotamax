@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { paceSurplus, getOtherProviders } from '../src/providers/index.mjs';
 import { limitsFromUsages } from '../src/providers/kimi.mjs';
-import { windowMeta, windowLimit, liveWindowLimit } from '../src/providers/codex.mjs';
+import { windowMeta, windowLimit, liveWindowLimit, resetCreditsNote } from '../src/providers/codex.mjs';
 
 const HOUR_S = 3600; // codex resets_at is unix seconds
 const nowS = () => Math.floor(Date.now() / 1000);
@@ -119,6 +119,14 @@ describe('liveWindowLimit (GET /backend-api/wham/usage shape)', () => {
   test('null or missing used_percent → null', () => {
     assert.equal(liveWindowLimit(null), null);
     assert.equal(liveWindowLimit({ limit_window_seconds: 604800 }), null);
+  });
+});
+
+describe('resetCreditsNote', () => {
+  test('pluralizes and drops when zero', () => {
+    assert.equal(resetCreditsNote(3), '3 rate-limit reset credits available');
+    assert.equal(resetCreditsNote(1), '1 rate-limit reset credit available');
+    assert.equal(resetCreditsNote(0), undefined);
   });
 });
 

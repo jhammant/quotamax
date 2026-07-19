@@ -157,10 +157,16 @@ async function fetchCodexLiveUsage() {
     const rl = d.rate_limit ?? {};
     const limits = [liveWindowLimit(rl.primary_window), liveWindowLimit(rl.secondary_window)].filter(Boolean);
     if (!limits.length) return null;
-    return { plan: d.plan_type ?? 'plan', limits };
+    return { plan: d.plan_type ?? 'plan', limits, resetCredits: d.rate_limit_reset_credits?.available_count ?? 0 };
   } catch {
     return null;
   }
+}
+
+// Codex Pro accounts get a few "rate-limit reset credits" — one-shot resets of a
+// hit window. Surface the count as headroom when it's non-zero.
+export function resetCreditsNote(n) {
+  return n > 0 ? `${n} rate-limit reset credit${n === 1 ? '' : 's'} available` : undefined;
 }
 
 export async function codexProvider() {
@@ -168,7 +174,7 @@ export async function codexProvider() {
   // when it's unavailable (usually an expired token: run `codex` to refresh).
   const live = await fetchCodexLiveUsage();
   if (live) {
-    return { id: 'codex', label: `Codex (ChatGPT ${live.plan})`, configured: true, ok: true, limits: live.limits };
+    return { id: 'codex', label: `Codex (ChatGPT ${live.plan})`, configured: true, ok: true, note: resetCreditsNote(live.resetCredits), limits: live.limits };
   }
 
   let hit = null;
