@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// quotamax — Claude Code quota intelligence.
+// quotamax — Claude Code quota intelligence (+ other coding-agent pools).
 //
-//   quotamax [status]     live limits, pace, projections
+//   quotamax [status]     live limits, pace, projections (+ other pools if present)
+//   quotamax providers    just the non-Claude pools: Codex (ChatGPT) + Kimi Code
 //   quotamax trend        ASCII burn-up chart + week forecast + baseline
 //   quotamax history      daily/weekly usage and API-cost history
 //   quotamax costs        what your usage would cost as API traffic
@@ -10,6 +11,7 @@
 // Global flags: --json (machine output), --quiet (agent: headroom word only), --version
 import { readFileSync } from 'node:fs';
 import { getQuota } from './quota.mjs';
+import { getOtherProviders } from './providers/index.mjs';
 import { readSnapshots, loadConfig } from './store.mjs';
 import { loadUsage, byDayModel, dailyOutput } from './transcripts.mjs';
 import { burnStats, metricsFor, renderChart, usageComparison, sparkline, weekdayProfile, shapedProjection, todayVsTypical } from './trends.mjs';
@@ -46,6 +48,24 @@ function fmtReset(iso) {
   return `resets ${when} (${h < 48 ? h.toFixed(1) + 'h' : (h / 24).toFixed(1) + 'd'})`;
 }
 
+// Render the non-Claude provider pools (Codex, Kimi) using the same bar/reset
+// styling as the Claude view. `○` = not connected / unreachable, `●` = live.
+function renderProviderLines(providers, indent = '    ') {
+  const out = [];
+  for (const p of providers) {
+    const live = p.configured && p.ok;
+    const dot = live ? '●' : '○';
+    if (!live || !p.limits?.length) {
+      out.push(`${indent}${dot} ${p.label} — ${p.note ?? (live ? 'no limits reported' : 'unavailable')}`);
+      continue;
+    }
+    for (const l of p.limits) {
+      out.push(`${indent}${dot} ${p.label} ${l.label}: ${bar(l.percent, 20)}  ${fmtReset(l.resetsAt)}${l.surplus ? '  ⚠ surplus expiring' : ''}`);
+    }
+  }
+  return out;
+}
+
 // Cached data under ~30 min is business as usual; only genuinely old data warns.
 function cachedNote(quota) {
   if (!quota.stale) return '';
@@ -69,8 +89,9 @@ function weekPoints(quota) {
 async function status() {
   const quota = await getQuota();
   const m = metricsFor(quota);
+  const others = await getOtherProviders();
   if (asJson) {
-    console.log(JSON.stringify({ quota, metrics: m }, null, 2));
+    console.log(JSON.stringify({ quota, metrics: m, others }, null, 2));
     return;
   }
   console.log(`quotamax — plan: ${quota.subscription ?? 'unknown'}${cachedNote(quota)}\n`);
@@ -80,7 +101,25 @@ async function status() {
     console.log(`  weekly ${s.label.padEnd(6).slice(0, 6)}${bar(s.percent)}  ${fmtReset(s.resetsAt)}`);
   }
   console.log(`\n  pace: expected ${m.expectedPercent.toFixed(0)}% by now → ${m.paceDelta <= 0 ? `${Math.abs(m.paceDelta).toFixed(0)} pts behind (headroom)` : `${m.paceDelta.toFixed(0)} pts ahead`}`);
-  console.log(`  run \`quotamax trend\` for the forecast, \`quotamax costs\` for API-cost equivalence`);
+  if (others.some((p) => p.configured)) {
+    console.log(`\n  other providers:`);
+    for (const line of renderProviderLines(others)) console.log(line);
+  }
+  console.log(`\n  run \`quotamax trend\` for the forecast, \`quotamax costs\` for API-cost equivalence`);
+}
+
+// `quotamax providers` — just the non-Claude pools (Codex + Kimi), the same view
+// status appends. Reads Codex from ~/.codex rollout logs and Kimi from its
+// /coding/v1/usages endpoint.
+async function providers() {
+  const others = await getOtherProviders();
+  if (asJson) {
+    console.log(JSON.stringify(others, null, 2));
+    return;
+  }
+  console.log('quotamax — other provider pools\n');
+  const lines = renderProviderLines(others, '  ');
+  console.log(lines.length ? lines.join('\n') : '  (no other providers found — install codex or kimi-code)');
 }
 
 async function trend() {
@@ -268,6 +307,8 @@ async function agent() {
 try {
   switch (cmd) {
     case 'status': await status(); break;
+    case 'providers':
+    case 'pools': await providers(); break;
     case 'trend':
     case 'forecast': await trend(); break;
     case 'history': await history(); break;
@@ -338,7 +379,7 @@ try {
       break;
     }
     default:
-      console.log(`Unknown command: ${cmd}\nCommands: status | trend | history | costs | agent [--quiet|--line] | priorities | reserve <pct> <name> | unreserve <name> | prioritize <name> | deprioritize <name> | pricing <model>\nFlags: --json`);
+      console.log(`Unknown command: ${cmd}\nCommands: status | providers | trend | history | costs | agent [--quiet|--line] | priorities | reserve <pct> <name> | unreserve <name> | prioritize <name> | deprioritize <name> | pricing <model>\nFlags: --json`);
       process.exit(1);
   }
 } catch (e) {

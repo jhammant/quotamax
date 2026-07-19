@@ -2,7 +2,8 @@
 
 Quota intelligence for Claude Code subscriptions: live limits, burn-rate
 forecasts, usage history, **API-cost equivalence**, and machine-readable
-capacity advice **for agents**.
+capacity advice **for agents** — plus at-a-glance headroom for the other
+coding-agent pools you run alongside it (**Codex** and **Kimi Code**).
 
 Your Max/Pro plan's weekly quota is use-it-or-lose-it. quotamax tells you where
 you stand, where the week is heading, what your usage would have cost as
@@ -63,7 +64,8 @@ usage endpoint and is never logged or stored.
 
 | Command | What it shows |
 |---|---|
-| `quotamax` / `quotamax status` | Live 5-hour session + weekly limit bars, reset times, pace vs linear |
+| `quotamax` / `quotamax status` | Live 5-hour session + weekly limit bars, reset times, pace vs linear (+ other pools if present) |
+| `quotamax providers` | Just the non-Claude pools: Codex (ChatGPT) + Kimi Code, same bar view |
 | `quotamax trend` | ASCII burn-up chart, burn rate, week-end projection (expiry or early exhaustion), usage vs your 3-week baseline |
 | `quotamax history` | Daily sparkline + weekly table of tokens and API-cost equivalents |
 | `quotamax costs` | Per-model API list-price equivalence over 7/30/90 days, with cache-token pricing |
@@ -74,6 +76,36 @@ usage endpoint and is never logged or stored.
 | `quotamax --version` | Print the installed quotamax version |
 
 Every command accepts `--json` for machine output.
+
+## Other provider pools
+
+If you also run **Codex** (ChatGPT) or **Kimi Code** (Moonshot) alongside Claude,
+`quotamax status` appends their headroom, and `quotamax providers` shows just them:
+
+```text
+$ quotamax providers
+
+  ● Codex (ChatGPT pro) weekly: [████░░░░░░░░░░░░░░░░] 19%  resets 26/07, 19:59 (6.4d)
+  ● Kimi Code (ADVANCED) 5h window: [██████░░░░░░░░░░░░░░] 31%  resets 19/07, 23:44 (1.0h)
+  ● Kimi Code (ADVANCED) weekly:    [███░░░░░░░░░░░░░░░░░] 17%  resets 24/07, 11:44 (4.5d)
+```
+
+These are read locally and need no extra config — a pool simply doesn't appear
+unless it's installed and signed in:
+
+- **Codex** — read from `~/.codex/sessions/**/rollout-*.jsonl` (the `rate_limits`
+  each run records). Each window is labeled by its own length — Codex reports its
+  **weekly** cap (`window_minutes` 10080) in the `primary` slot, so quotamax names
+  it `weekly`, not by slot. It only refreshes when you run `codex`; a reading whose
+  reset has already passed is shown `(stale — rerun codex)` rather than as `0%`.
+- **Kimi Code** — read live from `GET https://api.kimi.com/coding/v1/usages`
+  using the OAuth token in `~/.kimi-code/credentials`; the 5h + weekly windows
+  are server-authoritative. The token is short-lived and refreshed by the kimi
+  CLI, so quotamax caches the last good reading and falls back to it (with an
+  age note) if the token has gone stale.
+
+Claude remains the pool that drives `trend`, `costs`, `agent`, and the pacing math;
+the others are surfaced for at-a-glance headroom.
 
 ## For agents
 
