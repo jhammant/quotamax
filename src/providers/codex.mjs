@@ -1,22 +1,31 @@
-// Codex (ChatGPT subscription) quota, read from the local session rollout logs.
-// Codex writes under ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl. Each turn
-// emits a `token_count` event whose `rate_limits` carries `primary` and
-// `secondary` windows, each with `used_percent`/`resets_at`/`window_minutes`.
+// Codex (ChatGPT subscription) quota. Two sources, live preferred:
+//
+//  1. LIVE endpoint (the same one the CLI itself polls):
+//       GET https://chatgpt.com/backend-api/wham/usage
+//       headers: Authorization: Bearer <access_token>, chatgpt-account-id: <id>
+//     from ~/.codex/auth.json. Returns `rate_limit.primary_window` /
+//     `secondary_window`, each { used_percent, limit_window_seconds, reset_at }.
+//     Always fresh — the CLI keeps the token refreshed. (v0.144 uses /wham/usage;
+//     the /api/codex/usage path is the alt route and is bot-gated for non-CLI UAs.)
+//
+//  2. FALLBACK — the local session rollout logs under
+//     ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl, whose `rate_limits` carries
+//     `primary`/`secondary` windows { used_percent, window_minutes, resets_at }.
+//     Used when the token has expired (run `codex` to refresh) or the endpoint
+//     is unreachable. Stale between runs.
 //
 // IMPORTANT: which slot holds which window is NOT fixed — recent Codex reports
-// the *weekly* cap (window_minutes 10080 = 7d) in `primary` with `secondary`
-// null; older builds split 5h `primary` + weekly `secondary`. So we derive each
-// window's label from its own `window_minutes`, never from the slot name.
-//
-// There is no live endpoint; this reflects the most recent Codex run, so it can
-// be stale between runs. When a window's `resets_at` has already passed, the
-// reading is from a prior cycle — we mark it stale rather than inventing a %.
+// the *weekly* cap in `primary` with `secondary` null; older builds split 5h +
+// weekly. So we derive each window's label from its own length, never the slot.
+// A rollout window whose reset has already passed is flagged stale, not zeroed.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { paceSurplus } from './index.mjs';
 
 const SESSIONS = path.join(os.homedir(), '.codex', 'sessions');
+const AUTH = path.join(os.homedir(), '.codex', 'auth.json');
+const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 
 // Rollout filenames are `rollout-<ISO timestamp>-<uuid>.jsonl`, so lexical
 // order is chronological. Walk newest year→month→day and return recent files.
@@ -99,7 +108,69 @@ export function windowLimit(w) {
   };
 }
 
+// The live /wham/usage windows are shaped { used_percent, limit_window_seconds,
+// reset_at } — seconds, not the rollout's window_minutes. Map to the same limit
+// shape, labeling by the window's own length. Always fresh, so never stale.
+export function liveWindowLimit(w) {
+  if (!w || w.used_percent == null) return null;
+  const minutes = w.limit_window_seconds ? w.limit_window_seconds / 60 : null;
+  const { label, cycleDays } = windowMeta(minutes);
+  const resetsAt = w.reset_at ? new Date(w.reset_at * 1000).toISOString() : null;
+  return {
+    label,
+    percent: w.used_percent,
+    unit: '%',
+    resetsAt,
+    stale: false,
+    surplus: cycleDays >= 1 ? paceSurplus(w.used_percent, resetsAt, cycleDays) : false,
+  };
+}
+
+// Poll the live endpoint the CLI itself uses. Returns { plan, limits } on 200,
+// or null on any failure (no creds, expired token → 401, network) so the caller
+// falls back to the rollout logs.
+async function fetchCodexLiveUsage() {
+  let tok, acct;
+  try {
+    const a = JSON.parse(fs.readFileSync(AUTH, 'utf8'));
+    tok = a.tokens?.access_token;
+    acct = a.tokens?.account_id;
+  } catch {
+    return null;
+  }
+  if (!tok || !acct) return null;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    const r = await fetch(USAGE_URL, {
+      headers: {
+        Authorization: 'Bearer ' + tok,
+        'chatgpt-account-id': acct,
+        'User-Agent': 'codex_cli_rs/0.144.3',
+        Accept: 'application/json',
+      },
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    if (!r.ok) return null; // 401 expired etc. → fall back to logs
+    const d = await r.json();
+    const rl = d.rate_limit ?? {};
+    const limits = [liveWindowLimit(rl.primary_window), liveWindowLimit(rl.secondary_window)].filter(Boolean);
+    if (!limits.length) return null;
+    return { plan: d.plan_type ?? 'plan', limits };
+  } catch {
+    return null;
+  }
+}
+
 export async function codexProvider() {
+  // Prefer the live endpoint — always fresh — and only touch the rollout logs
+  // when it's unavailable (usually an expired token: run `codex` to refresh).
+  const live = await fetchCodexLiveUsage();
+  if (live) {
+    return { id: 'codex', label: `Codex (ChatGPT ${live.plan})`, configured: true, ok: true, limits: live.limits };
+  }
+
   let hit = null;
   for (const f of recentRolloutFiles()) {
     hit = lastRateLimits(f);
@@ -109,11 +180,11 @@ export async function codexProvider() {
     return {
       id: 'codex',
       label: 'Codex',
-      configured: fs.existsSync(SESSIONS),
+      configured: fs.existsSync(SESSIONS) || fs.existsSync(AUTH),
       ok: false,
-      note: fs.existsSync(SESSIONS)
-        ? 'no rate-limit data yet — run a `codex exec` once so it records usage'
-        : 'Codex not found (~/.codex/sessions missing) — run `codex login`',
+      note: fs.existsSync(SESSIONS) || fs.existsSync(AUTH)
+        ? 'no live usage (token expired? run `codex`) and no rate-limit data in the logs'
+        : 'Codex not found (~/.codex missing) — run `codex login`',
       limits: [],
     };
   }
@@ -124,7 +195,7 @@ export async function codexProvider() {
     label: `Codex (ChatGPT ${rl.plan_type ?? 'plan'})`,
     configured: true,
     ok: true,
-    note: ageH != null && ageH > 1 ? `usage as of last run ${ageH.toFixed(1)}h ago` : undefined,
+    note: `from local logs${ageH != null ? `, last run ${ageH.toFixed(1)}h ago` : ''} — run \`codex\` to refresh live`,
     // Map whichever windows are present; the label comes from each window's own
     // length, so the weekly cap shows as "weekly" wherever Codex reports it.
     limits: [windowLimit(rl.primary), windowLimit(rl.secondary)].filter(Boolean),

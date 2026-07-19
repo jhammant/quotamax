@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { paceSurplus, getOtherProviders } from '../src/providers/index.mjs';
 import { limitsFromUsages } from '../src/providers/kimi.mjs';
-import { windowMeta, windowLimit } from '../src/providers/codex.mjs';
+import { windowMeta, windowLimit, liveWindowLimit } from '../src/providers/codex.mjs';
 
 const HOUR_S = 3600; // codex resets_at is unix seconds
 const nowS = () => Math.floor(Date.now() / 1000);
@@ -98,6 +98,27 @@ describe('codex windowLimit', () => {
   test('null window or missing used_percent → null (dropped)', () => {
     assert.equal(windowLimit(null), null);
     assert.equal(windowLimit({ window_minutes: 300 }), null);
+  });
+});
+
+// The live /wham/usage endpoint uses seconds (limit_window_seconds) + reset_at,
+// not the rollout's window_minutes/resets_at. It's always fresh (never stale).
+describe('liveWindowLimit (GET /backend-api/wham/usage shape)', () => {
+  test('604800s (7d) primary_window → weekly, never stale', () => {
+    const l = liveWindowLimit({ used_percent: 21, limit_window_seconds: 604800, reset_at: nowS() + 120 * HOUR_S });
+    assert.equal(l.label, 'weekly');
+    assert.equal(l.percent, 21);
+    assert.equal(l.stale, false);
+    assert.match(l.resetsAt, /^20\d\d-/); // ISO string, not epoch
+  });
+
+  test('18000s (5h) → 5h window', () => {
+    assert.equal(liveWindowLimit({ used_percent: 3, limit_window_seconds: 18000, reset_at: nowS() + HOUR_S }).label, '5h window');
+  });
+
+  test('null or missing used_percent → null', () => {
+    assert.equal(liveWindowLimit(null), null);
+    assert.equal(liveWindowLimit({ limit_window_seconds: 604800 }), null);
   });
 });
 

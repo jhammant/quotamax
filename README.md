@@ -85,19 +85,21 @@ If you also run **Codex** (ChatGPT) or **Kimi Code** (Moonshot) alongside Claude
 ```text
 $ quotamax providers
 
-  ● Codex (ChatGPT pro) weekly: [████░░░░░░░░░░░░░░░░] 19%  resets 26/07, 19:59 (6.4d)
+  ● Codex (ChatGPT pro) weekly: [████░░░░░░░░░░░░░░░░] 21%  resets 25/07, 04:27 (5.2d)
   ● Kimi Code (ADVANCED) 5h window: [██████░░░░░░░░░░░░░░] 31%  resets 19/07, 23:44 (1.0h)
   ● Kimi Code (ADVANCED) weekly:    [███░░░░░░░░░░░░░░░░░] 17%  resets 24/07, 11:44 (4.5d)
 ```
 
-These are read locally and need no extra config — a pool simply doesn't appear
-unless it's installed and signed in:
+Both are read **live** from each tool's own usage endpoint and need no extra
+config — a pool simply doesn't appear unless it's installed and signed in:
 
-- **Codex** — read from `~/.codex/sessions/**/rollout-*.jsonl` (the `rate_limits`
-  each run records). Each window is labeled by its own length — Codex reports its
-  **weekly** cap (`window_minutes` 10080) in the `primary` slot, so quotamax names
-  it `weekly`, not by slot. It only refreshes when you run `codex`; a reading whose
-  reset has already passed is shown `(stale — rerun codex)` rather than as `0%`.
+- **Codex** — read live from `GET https://chatgpt.com/backend-api/wham/usage`
+  (the same endpoint the CLI itself polls), using the OAuth token + account id in
+  `~/.codex/auth.json`. Its weekly cap is `rate_limit.primary_window`; each window
+  is labeled by its own length, not by slot, so the weekly cap always shows as
+  `weekly`. If the token has expired (run any `codex` command to refresh), quotamax
+  falls back to the local `~/.codex/sessions` rollout logs, flagging a reset-passed
+  reading `(stale)` rather than showing a fake `0%`.
 - **Kimi Code** — read live from `GET https://api.kimi.com/coding/v1/usages`
   using the OAuth token in `~/.kimi-code/credentials`; the 5h + weekly windows
   are server-authoritative. The token is short-lived and refreshed by the kimi
