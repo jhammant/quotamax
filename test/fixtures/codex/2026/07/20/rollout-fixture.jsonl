@@ -1,0 +1,5 @@
+{"timestamp":"2026-07-20T10:00:00.000Z","payload":{"info":{"total_token_usage":{"input_tokens":100000,"cached_input_tokens":80000,"output_tokens":1000,"total_tokens":101000}}}}
+{"timestamp":"2026-07-20T10:01:00.000Z","payload":{"info":{"total_token_usage":
+not json at all
+{"timestamp":"2026-07-20T10:02:00.000Z","payload":{"type":"unrelated"}}
+{"timestamp":"2026-07-20T10:03:00.000Z","payload":{"info":{"total_token_usage":{"input_tokens":500000,"cached_input_tokens":450000,"output_tokens":6000,"total_tokens":506000}}}}

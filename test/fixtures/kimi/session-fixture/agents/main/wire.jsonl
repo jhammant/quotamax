@@ -1,0 +1,5 @@
+{"timestamp":"2026-07-20T11:00:00.000Z","usage":{"inputOther":100,"output":50,"inputCacheRead":200,"inputCacheCreation":25}}
+{"timestamp":"2026-07-20T11:00:01.000Z","usage":{"inputOther":100,"output":50,"inputCacheRead":200,"inputCacheCreation":25}}
+{"timestamp":"2026-07-20T11:00:02.000Z","payload":{"kind":"unrelated"}}
+{"timestamp":"2026-07-20T11:00:03.000Z","usage":{"inputOther":
+{"timestamp":"2026-07-20T11:00:04.000Z","payload":{"usage":{"inputOther":400,"output":100,"inputCacheRead":500,"inputCacheCreation":50}}}
