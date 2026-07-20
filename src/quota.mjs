@@ -95,12 +95,12 @@ function staleFallback(err, disk) {
 
 // Successful live reads are recorded as snapshots, which is how the trend
 // history accumulates with zero daemons.
-export async function getQuota() {
+export async function getQuota({ force = false } = {}) {
   const now = Date.now();
-  if (memCache.value && now - memCache.at < MEM_TTL_MS) return memCache.value;
+  if (!force && memCache.value && now - memCache.at < MEM_TTL_MS) return memCache.value;
 
   const disk = readJson(DISK_CACHE);
-  if (disk?.quota && now - disk.fetchedAt < DISK_TTL_MS) {
+  if (!force && disk?.quota && now - disk.fetchedAt < DISK_TTL_MS) {
     const quota = withAge(disk.quota, disk.fetchedAt);
     memCache = { at: now, value: quota };
     return quota;

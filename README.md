@@ -69,13 +69,45 @@ usage endpoint and is never logged or stored.
 | `quotamax trend` | ASCII burn-up chart, burn rate, week-end projection (expiry or early exhaustion), usage vs your 3-week baseline |
 | `quotamax history` | Daily sparkline + weekly table of tokens and API-cost equivalents |
 | `quotamax costs` | Per-model API list-price equivalence over 7/30/90 days, with cache-token pricing |
+| `quotamax runcost <codex\|kimi\|claude>` | Most recent run's tokens and API list-price equivalent (`--since <minutes>` controls recency) |
+| `quotamax measure -- <cmd...>` | Run a command, then show elapsed time, weekly quota movement, and Codex/Kimi run cost |
 | `quotamax agent` | JSON capacity advice for orchestrators (below) |
 | `quotamax reserve 20 my-project` | Hold back 20% of the weekly quota for a project (until the reset) |
 | `quotamax prioritize my-project` | Mark a project important — exported for burners/miners to favor |
 | `quotamax priorities` | Show active reservations and priority projects |
 | `quotamax --version` | Print the installed quotamax version |
 
-Every command accepts `--json` for machine output.
+Every command accepts `--json` for machine output. For `measure`, put quotamax's
+options before the separator: `quotamax measure --json -- <cmd...>`.
+
+## Per-run cost and quota movement
+
+`runcost` reads the newest local agent log and prints its token usage and API
+list-price equivalent. The estimate is a comparison value: runs covered by a
+Codex, Kimi Code, or Claude subscription have **$0 incremental API cost**.
+
+```text
+$ quotamax runcost codex --since 30
+codex: 556k tokens (90% cached) · ~$0.37 API-equiv
+```
+
+`measure` wraps a command with inherited terminal input/output, snapshots every
+available weekly meter before and after it, and reports the change alongside
+any recent Codex/Kimi run logs:
+
+```text
+$ quotamax measure -- codex exec "review this repository"
+elapsed: 18.4s
+Claude weekly: 41% → 41% (Δ ~0%)
+Codex (ChatGPT pro) weekly: 20% → 21% (Δ +1%)
+Kimi Code weekly: 17% → 17% (Δ ~0%)
+codex: 556k tokens (90% cached) · ~$0.37 API-equiv
+```
+
+Weekly meters have 1% resolution, so unchanged readings are shown as `~0%`:
+the run may have consumed less than one visible percentage point. Use
+`quotamax measure --json -- <cmd...>` for a structured report. The wrapped
+command's exit status is preserved.
 
 ## Other provider pools
 
@@ -184,6 +216,9 @@ fi
   (`~/.claude/projects/**/*.jsonl`), which record per-message token usage and
   model. Parsing is incremental (per-file mtime cache) — the first run scans
   everything, later runs take milliseconds.
+- **Per-run costs** read the newest Codex rollout under `~/.codex/sessions`,
+  Kimi agent wire logs under `~/.kimi-code/sessions`, or the newest Claude
+  transcript. Repeated Kimi streaming frames are de-duplicated before pricing.
 - **API-cost equivalence** prices each message at Anthropic's published API
   list prices, including cache writes at 1.25× and cache reads at 0.1× of the
   input price. It's an estimate: list prices only, no batch/intro discounts.
@@ -192,8 +227,9 @@ fi
 
 ## Privacy & security
 
-Everything runs locally. quotamax never transmits anything except the single
-authenticated GET to Anthropic's usage endpoint. Caches under
+Everything runs locally. quotamax only makes authenticated, read-only quota
+requests to the providers described above; run-cost parsing itself never sends
+local log data anywhere. Caches under
 `~/.cache/quotamax` and `~/.local/state/quotamax` contain token *counts* only —
 never message content, never credentials.
 

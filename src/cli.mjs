@@ -7,9 +7,12 @@
 //   quotamax history      daily/weekly usage and API-cost history
 //   quotamax costs        what your usage would cost as API traffic
 //   quotamax agent        machine-readable capacity advice for agents
+//   quotamax runcost      tokens + API-$ equivalent for the latest agent run
+//   quotamax measure      wrap a command and measure weekly quota movement
 //
 // Global flags: --json (machine output), --quiet (agent: headroom word only), --version
 import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { getQuota } from './quota.mjs';
 import { getOtherProviders } from './providers/index.mjs';
 import { readSnapshots, loadConfig } from './store.mjs';
@@ -23,15 +26,21 @@ import {
   setOverride, clearOverride, activeOverride,
 } from './priorities.mjs';
 import { ADVICE_BY_LEVEL } from './agent.mjs';
+import {
+  buildMeasureReport, fmtRun, latestClaudeRun, latestCodexRun, latestKimiRun,
+  priceRun, splitMeasureArgs,
+} from './runcost.mjs';
 
 const args = process.argv.slice(2);
-const flags = new Set(args.filter((a) => a.startsWith('--')));
-const cmd = args.find((a) => !a.startsWith('--')) ?? 'status';
+const separator = args.indexOf('--');
+const ownArgs = separator < 0 ? args : args.slice(0, separator);
+const flags = new Set(ownArgs.filter((a) => a.startsWith('--')));
+const cmd = ownArgs.find((a) => !a.startsWith('--')) ?? 'status';
 const asJson = flags.has('--json');
 const HOUR = 3.6e6;
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
-if (flags.has('--version') || args.includes('-v')) {
+if (flags.has('--version') || ownArgs.includes('-v')) {
   console.log(VERSION);
   process.exit(0);
 }
@@ -305,6 +314,93 @@ async function agent() {
   process.exit(payload.ok ? exitCodeFor(payload.headroom) : 5);
 }
 
+function optionNumber(name, fallback) {
+  const index = ownArgs.indexOf(name);
+  if (index < 0) return fallback;
+  const value = Number(ownArgs[index + 1]);
+  if (!Number.isFinite(value) || value < 0) throw new Error(`${name} requires a non-negative number`);
+  return value;
+}
+
+function runReader(provider, sinceMin) {
+  if (provider === 'codex') return latestCodexRun({ sinceMin });
+  if (provider === 'kimi') return latestKimiRun({ sinceMin });
+  if (provider === 'claude') return latestClaudeRun({ sinceMin });
+  throw new Error('usage: quotamax runcost <codex|kimi|claude> [--since <min>] [--json]');
+}
+
+async function runcost() {
+  const positional = ownArgs.filter((arg, index) => {
+    if (arg.startsWith('--')) return false;
+    return index === 0 || ownArgs[index - 1] !== '--since';
+  });
+  const provider = String(positional[1] ?? '').toLowerCase();
+  const sinceMin = optionNumber('--since', 60);
+  const tokens = runReader(provider, sinceMin);
+  if (!tokens) {
+    const message = `${provider || 'provider'}: no run found in the last ${sinceMin}m`;
+    if (asJson) console.log(JSON.stringify({ provider: provider || null, found: false, sinceMin, message }, null, 2));
+    else console.log(message);
+    return;
+  }
+  const priced = priceRun(provider, tokens);
+  const result = { provider, found: true, at: tokens.at, tokens, ...priced };
+  if (asJson) console.log(JSON.stringify(result, null, 2));
+  else console.log(fmtRun(provider, tokens, priced.usd));
+}
+
+async function weeklySnapshot() {
+  const [claude, others] = await Promise.allSettled([getQuota({ force: true }), getOtherProviders()]);
+  const snapshot = {};
+  if (claude.status === 'fulfilled') {
+    snapshot.claude = { label: 'Claude', percent: claude.value.weekly?.percent };
+  } else {
+    snapshot.claude = { label: 'Claude', percent: null };
+  }
+  if (others.status === 'fulfilled') {
+    for (const provider of others.value) {
+      const weekly = provider.limits?.find((limit) => /weekly/i.test(limit.label));
+      if (weekly) snapshot[provider.id] = { label: provider.label, percent: weekly.percent };
+    }
+  }
+  return snapshot;
+}
+
+function spawnInherited(command) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command[0], command.slice(1), { stdio: 'inherit' });
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+}
+
+async function measure() {
+  const split = splitMeasureArgs(args);
+  if (!split.command.length) throw new Error('usage: quotamax measure [--json] -- <cmd...>');
+  const before = await weeklySnapshot();
+  // Baseline the newest run per pool BEFORE the command, so we only attribute a
+  // run to this command if a strictly-newer one appears (avoids crediting an
+  // unrelated agent run that merely finished just beforehand).
+  const beforeAt = {
+    codex: latestCodexRun({ sinceMin: 1440 })?.at ?? null,
+    kimi: latestKimiRun({ sinceMin: 1440 })?.at ?? null,
+  };
+  const started = Date.now();
+  const child = await spawnInherited(split.command);
+  const elapsedMs = Date.now() - started;
+  const after = await weeklySnapshot();
+  const sinceMin = Math.max(2, Math.ceil(elapsedMs / 60e3) + 1);
+  const isNewer = (run, prevAt) => (run && (!prevAt || run.at > prevAt) ? run : null);
+  const runs = {
+    codex: isNewer(latestCodexRun({ sinceMin }), beforeAt.codex),
+    kimi: isNewer(latestKimiRun({ sinceMin }), beforeAt.kimi),
+  };
+  const report = buildMeasureReport({ before, after, runs, elapsedMs });
+  if (asJson) console.log(JSON.stringify(report, null, 2));
+  else console.log(report.text);
+  process.exitCode = child.code ?? (child.signal ? 1 : 0);
+}
+
 try {
   switch (cmd) {
     case 'status': await status(); break;
@@ -317,6 +413,8 @@ try {
     case 'cost': await costs(); break;
     case 'agent':
     case 'check': await agent(); break;
+    case 'runcost': await runcost(); break;
+    case 'measure': await measure(); break;
     case 'pricing':
       console.log(JSON.stringify(priceFor(args[1] ?? 'claude-opus-4-8'), null, 2));
       break;
@@ -380,7 +478,7 @@ try {
       break;
     }
     default:
-      console.log(`Unknown command: ${cmd}\nCommands: status | providers | trend | history | costs | agent [--quiet|--line] | priorities | reserve <pct> <name> | unreserve <name> | prioritize <name> | deprioritize <name> | pricing <model>\nFlags: --json`);
+      console.log(`Unknown command: ${cmd}\nCommands: status | providers | trend | history | costs | runcost <codex|kimi|claude> [--since <min>] | measure [--json] -- <cmd...> | agent [--quiet|--line] | priorities | reserve <pct> <name> | unreserve <name> | prioritize <name> | deprioritize <name> | pricing <model>\nFlags: --json`);
       process.exit(1);
   }
 } catch (e) {
