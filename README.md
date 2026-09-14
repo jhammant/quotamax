@@ -3,7 +3,8 @@
 Quota intelligence for Claude Code subscriptions: live limits, burn-rate
 forecasts, usage history, **API-cost equivalence**, and machine-readable
 capacity advice **for agents** — plus at-a-glance headroom for the other
-coding-agent pools you run alongside it (**Codex** and **Kimi Code**).
+coding-agent pools you run alongside it (**Codex**, **Kimi Code** and
+**DeepSeek** API credit).
 
 Your Max/Pro plan's weekly quota is use-it-or-lose-it. quotamax tells you where
 you stand, where the week is heading, what your usage would have cost as
@@ -65,7 +66,7 @@ usage endpoint and is never logged or stored.
 | Command | What it shows |
 |---|---|
 | `quotamax` / `quotamax status` | Live 5-hour session + weekly limit bars, reset times, pace vs linear (+ other pools if present) |
-| `quotamax providers` | Just the non-Claude pools: Codex (ChatGPT) + Kimi Code, same bar view |
+| `quotamax providers` | Just the non-Claude pools: Codex (ChatGPT) + Kimi Code + DeepSeek credit, same view |
 | `quotamax trend` | ASCII burn-up chart, burn rate, week-end projection (expiry or early exhaustion), usage vs your 3-week baseline |
 | `quotamax history` | Daily sparkline + weekly table of tokens and API-cost equivalents |
 | `quotamax costs` | Per-model API list-price equivalence over 7/30/90 days, with cache-token pricing |
@@ -112,7 +113,9 @@ command's exit status is preserved.
 ## Other provider pools
 
 If you also run **Codex** (ChatGPT) or **Kimi Code** (Moonshot) alongside Claude,
-`quotamax status` appends their headroom, and `quotamax providers` shows just them:
+or keep a **DeepSeek** prepaid API balance as the backstop when subscription
+quota runs low, `quotamax status` appends their headroom, and
+`quotamax providers` shows just them:
 
 ```text
 $ quotamax providers
@@ -120,10 +123,12 @@ $ quotamax providers
   ● Codex (ChatGPT pro) weekly: [████░░░░░░░░░░░░░░░░] 21%  resets 25/07, 04:27 (5.2d)
   ● Kimi Code (ADVANCED) 5h window: [██████░░░░░░░░░░░░░░] 31%  resets 19/07, 23:44 (1.0h)
   ● Kimi Code (ADVANCED) weekly:    [███░░░░░░░░░░░░░░░░░] 17%  resets 24/07, 11:44 (4.5d)
+  ● DeepSeek (API credit): $50.00 USD balance
 ```
 
-Both are read **live** from each tool's own usage endpoint and need no extra
-config — a pool simply doesn't appear unless it's installed and signed in:
+Codex and Kimi are read **live** from each tool's own usage endpoint and need
+no extra config — a pool simply doesn't appear unless it's installed and
+signed in:
 
 - **Codex** — read live from `GET https://chatgpt.com/backend-api/wham/usage`
   (the same endpoint the CLI itself polls), using the OAuth token + account id in
@@ -137,6 +142,16 @@ config — a pool simply doesn't appear unless it's installed and signed in:
   are server-authoritative. The token is short-lived and refreshed by the kimi
   CLI, so quotamax caches the last good reading and falls back to it (with an
   age note) if the token has gone stale.
+- **DeepSeek** — read live from `GET https://api.deepseek.com/user/balance`.
+  DeepSeek is prepaid pay-as-you-go credit, not a usage window, so quotamax
+  shows the remaining balance instead of a bar, with a `⚠ low credit` marker
+  once it drops under the threshold. The API key is looked up in order:
+  `DEEPSEEK_API_KEY`, then the macOS Keychain entry `deepseek-api-key`
+  (`security find-generic-password -s deepseek-api-key`), then
+  `~/.config/deepseek/env`. With no key the pool simply shows as not
+  configured. Env vars:
+  - `DEEPSEEK_API_KEY` — the API key (overrides Keychain/env file)
+  - `DEEPSEEK_LOW_BALANCE_USD` — low-credit threshold in USD (default `5`)
 
 Claude remains the pool that drives `trend`, `costs`, `agent`, and the pacing math;
 the others are surfaced for at-a-glance headroom.
@@ -157,9 +172,17 @@ can I push right now?*
     "modelTier": "top",
     "thinkingEffort": "high",
     "rationale": "session window 39% used (resets in 143m); weekly 58% used, 12 pts behind linear pace with 5.7d to reset"
-  }
+  },
+  "backstop": { "provider": "deepseek", "available": true, "balanceUsd": 50, "low": false }
 }
 ```
+
+- **backstop**: the DeepSeek prepaid credit pool, exposed so a router can
+  send overflow work there when `headroom` is `constrained`/`critical`.
+  `available` means a key is configured, the balance endpoint answered, the
+  API reports the balance usable and it is above zero; `low` means the
+  balance is under `DEEPSEEK_LOW_BALANCE_USD`. Being credit-based, DeepSeek
+  never affects the `headroom`/`advice` computation.
 
 - **headroom**: `abundant` → burn freely (behind pace, cool session window);
   `comfortable` → normal operation; `constrained` → economize (hot session

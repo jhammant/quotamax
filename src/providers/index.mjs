@@ -1,15 +1,19 @@
 // Extra provider pools beyond Claude. quotamax reads Claude natively (quota.mjs);
 // this layer adds the other coding-agent subscriptions a user may run alongside
-// it — Codex (ChatGPT) and Kimi Code (Moonshot) — so `quotamax status` /
-// `quotamax providers` can show every pool's headroom in one place.
+// it — Codex (ChatGPT), Kimi Code (Moonshot) and DeepSeek (prepaid API
+// credit) — so `quotamax status` / `quotamax providers` can show every pool's
+// headroom in one place.
 //
 // Each provider returns a normalized shape:
 //   { id, label, configured, ok, note?, limits: [{ label, percent, unit,
 //     resetsAt, surplus }] }
+// DeepSeek is credit-based (kind: 'credit') and reports balanceUsd instead of
+// windowed limits.
 import { codexProvider } from './codex.mjs';
 import { kimiProvider } from './kimi.mjs';
+import { deepseekProvider } from './deepseek.mjs';
 
-const PROVIDERS = [codexProvider, kimiProvider];
+const PROVIDERS = [codexProvider, kimiProvider, deepseekProvider];
 
 // A limit has "surplus" when usage trails the linear pace of its cycle by 15+ pts
 // — i.e. quota that's on track to expire unused.

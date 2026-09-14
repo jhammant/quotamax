@@ -1,7 +1,7 @@
 {
   "name": "quotamax",
   "version": "0.4.0",
-  "description": "Claude Code quota intelligence: live limits, burn-rate forecasts, API-cost equivalence, and machine-readable capacity advice for agents — plus at-a-glance Codex + Kimi Code pool headroom",
+  "description": "Claude Code quota intelligence: live limits, burn-rate forecasts, API-cost equivalence, and machine-readable capacity advice for agents — plus at-a-glance Codex + Kimi Code pool headroom and DeepSeek credit balance",
   "type": "module",
   "bin": {
     "quotamax": "src/cli.mjs"

@@ -2,7 +2,7 @@
 // quotamax — Claude Code quota intelligence (+ other coding-agent pools).
 //
 //   quotamax [status]     live limits, pace, projections (+ other pools if present)
-//   quotamax providers    just the non-Claude pools: Codex (ChatGPT) + Kimi Code
+//   quotamax providers    just the non-Claude pools: Codex (ChatGPT) + Kimi Code + DeepSeek credit
 //   quotamax trend        ASCII burn-up chart + week forecast + baseline
 //   quotamax history      daily/weekly usage and API-cost history
 //   quotamax costs        what your usage would cost as API traffic
@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { getQuota } from './quota.mjs';
 import { getOtherProviders } from './providers/index.mjs';
+import { deepseekProvider, backstopEntry } from './providers/deepseek.mjs';
 import { readSnapshots, loadConfig } from './store.mjs';
 import { loadUsage, byDayModel, dailyOutput } from './transcripts.mjs';
 import { burnStats, metricsFor, renderChart, usageComparison, sparkline, weekdayProfile, shapedProjection, todayVsTypical } from './trends.mjs';
@@ -57,13 +58,25 @@ function fmtReset(iso) {
   return `resets ${when} (${h < 48 ? h.toFixed(1) + 'h' : (h / 24).toFixed(1) + 'd'})`;
 }
 
-// Render the non-Claude provider pools (Codex, Kimi) using the same bar/reset
-// styling as the Claude view. `○` = not connected / unreachable, `●` = live.
+// Render the non-Claude provider pools (Codex, Kimi, DeepSeek) using the same
+// bar/reset styling as the Claude view. `○` = not connected / unreachable,
+// `●` = live. Credit-based pools (DeepSeek) get a balance line, not a bar.
 function renderProviderLines(providers, indent = '    ') {
   const out = [];
   for (const p of providers) {
     const live = p.configured && p.ok;
     const dot = live ? '●' : '○';
+    if (p.kind === 'credit') {
+      if (!live || p.balanceUsd == null) {
+        out.push(`${indent}${dot} ${p.label} — ${p.note ?? 'balance unavailable'}`);
+        continue;
+      }
+      const marks = [];
+      if (p.available === false) marks.push('⚠ credit unavailable');
+      if (p.low) marks.push(`⚠ low credit (< $${Number(p.thresholdUsd).toFixed(2)})`);
+      out.push(`${indent}${dot} ${p.label} (API credit): $${p.balanceUsd.toFixed(2)} ${p.currency ?? 'USD'} balance${marks.length ? '  ' + marks.join(' · ') : ''}`);
+      continue;
+    }
     if (!live || !p.limits?.length) {
       out.push(`${indent}${dot} ${p.label} — ${p.note ?? (live ? 'no limits reported' : 'unavailable')}`);
       continue;
@@ -118,9 +131,9 @@ async function status() {
   console.log(`\n  run \`quotamax trend\` for the forecast, \`quotamax costs\` for API-cost equivalence`);
 }
 
-// `quotamax providers` — just the non-Claude pools (Codex + Kimi), the same view
-// status appends. Reads Codex from ~/.codex rollout logs and Kimi from its
-// /coding/v1/usages endpoint.
+// `quotamax providers` — just the non-Claude pools (Codex + Kimi + DeepSeek),
+// the same view status appends. Reads Codex from ~/.codex rollout logs, Kimi
+// from its /coding/v1/usages endpoint and DeepSeek from /user/balance.
 async function providers() {
   const others = await getOtherProviders();
   if (asJson) {
@@ -129,7 +142,7 @@ async function providers() {
   }
   console.log('quotamax — other provider pools\n');
   const lines = renderProviderLines(others, '  ');
-  console.log(lines.length ? lines.join('\n') : '  (no other providers found — install codex or kimi-code)');
+  console.log(lines.length ? lines.join('\n') : '  (no other providers found — install codex or kimi-code, or set DEEPSEEK_API_KEY)');
 }
 
 async function trend() {
@@ -289,6 +302,13 @@ async function agent() {
     payload = advise(await getQuota(), Date.now(), reservedPercent(pri), override);
     payload.reservations = activeReservations(pri);
     payload.priorities = pri.priorities;
+    // DeepSeek credit is the backstop pool: surfaced so callers can route
+    // overflow work to it, but never fed into the headroom/advice math.
+    try {
+      payload.backstop = backstopEntry(await deepseekProvider());
+    } catch {
+      payload.backstop = { provider: 'deepseek', available: false, balanceUsd: null, low: null };
+    }
   } catch (e) {
     payload = { ok: false, error: e.message, headroom: 'unknown', advice: null };
   }
