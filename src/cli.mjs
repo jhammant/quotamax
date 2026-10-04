@@ -11,6 +11,7 @@
 //   quotamax measure      wrap a command and measure weekly quota movement
 //
 // Global flags: --json (machine output), --quiet (agent: headroom word only), --version
+import { exitAfterFlush } from './exit.mjs';
 import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { getQuota } from './quota.mjs';
@@ -324,14 +325,14 @@ async function agent() {
         `Claude quota headroom: ${payload.headroom} — cap parallel subagents at ${a.parallelism}, model tier ${a.modelTier}, thinking ${a.thinkingEffort} (session ${payload.session.percentUsed}%, weekly ${payload.weekly.percentUsed}%${res}, resets in ${d}d)`,
       );
     }
-    process.exit(0);
+    return exitAfterFlush(0);
   }
   if (flags.has('--quiet')) {
     console.log(payload.headroom);
   } else {
     console.log(JSON.stringify(payload, null, asJson ? 0 : 2));
   }
-  process.exit(payload.ok ? exitCodeFor(payload.headroom) : 5);
+  exitAfterFlush(payload.ok ? exitCodeFor(payload.headroom) : 5);
 }
 
 function optionNumber(name, fallback) {
