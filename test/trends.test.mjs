@@ -1,6 +1,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { burnStats, metricsFor, renderChart, usageComparison, sparkline, weekdayProfile, shapedProjection } from '../src/trends.mjs';
+import {
+  burnStats, metricsFor, renderChart, usageComparison, sparkline, weekdayProfile, shapedProjection, shapedWalk, weekForecast,
+} from '../src/trends.mjs';
 
 const HOUR = 3.6e6;
 const DAY = 24 * HOUR;
@@ -148,6 +150,83 @@ describe('shapedProjection', () => {
   test('clamps at 100', () => {
     const shaped = shapedProjection(90, 50, Array(7).fill(1), WEEK_START + DAY, RESET);
     assert.equal(shaped, 100);
+  });
+});
+
+describe('shapedWalk', () => {
+  test('flat profile: reaches 100% when the linear burn would', () => {
+    const now = WEEK_START + 2 * DAY;
+    const w = shapedWalk(50, 25, Array(7).fill(1), now, RESET); // 50 left at 25/day
+    assert.equal(w.endPercent, 100);
+    assert.ok(Math.abs(w.exhaustsAtMs - (now + 48 * HOUR)) < 1000, `got ${(w.exhaustsAtMs - now) / HOUR}h`);
+  });
+
+  test('does not reach 100% before the reset → exhaustsAtMs null', () => {
+    const w = shapedWalk(20, 10, Array(7).fill(1), WEEK_START + 2 * DAY, RESET);
+    assert.ok(Math.abs(w.endPercent - 70) < 0.5);
+    assert.equal(w.exhaustsAtMs, null);
+  });
+
+  test('quiet days ahead: a burn that would run out linearly stays under 100%', () => {
+    const now = new Date(2026, 6, 8, 12).getTime(); // local noon
+    const intensity = Array(7).fill(0.2);
+    intensity[new Date(now).getDay()] = 1;
+    // linear: 60 + 20/day × 3 days = 120 → out. Shaped: +10 rest of today, +10 over 2.5 quiet days.
+    const w = shapedWalk(60, 20, intensity, now, now + 3 * DAY);
+    assert.ok(Math.abs(w.endPercent - 80) < 0.5, `got ${w.endPercent}`);
+    assert.equal(w.exhaustsAtMs, null);
+  });
+
+  test('already at 100% → exhausted now', () => {
+    const now = WEEK_START + 2 * DAY;
+    assert.equal(shapedWalk(100, 5, Array(7).fill(1), now, RESET).exhaustsAtMs, now);
+  });
+});
+
+describe('weekForecast', () => {
+  const day = (t) => new Date(t).toISOString().slice(0, 10);
+
+  test('is the trend maths: burnStats + weekdayProfile + shapedProjection', () => {
+    const now = WEEK_START + 2 * DAY;
+    const daily = {};
+    for (let i = 1; i <= 28; i++) {
+      const dow = new Date(now - i * DAY).getUTCDay();
+      daily[day(now - i * DAY)] = dow === 0 || dow === 6 ? 0 : 700;
+    }
+    const points = climb(12, 2);
+    const f = weekForecast(points, RESET, daily, now);
+    const stats = burnStats(points, RESET, now);
+    const intensity = weekdayProfile(daily, now);
+    assert.deepEqual(f.stats, stats);
+    assert.deepEqual(f.intensity, intensity);
+    assert.equal(f.shapedEnd, shapedProjection(stats.current, stats.ratePerDay, intensity, now, RESET));
+    assert.equal(f.forecast.shapedEndPercent, Number(f.shapedEnd.toFixed(1)));
+  });
+
+  test('over pace: runsOut, with hours until the quota is gone', () => {
+    const f = weekForecast(climb(25, 2), RESET, {}, WEEK_START + 2 * DAY); // 50% at day 2
+    assert.deepEqual(f.forecast, { runsOut: true, shapedEndPercent: 100, exhaustsInHours: 48 });
+  });
+
+  test('under pace: does not run out, exhaustsInHours null', () => {
+    const f = weekForecast(climb(10, 2), RESET, {}, WEEK_START + 2 * DAY);
+    assert.equal(f.forecast.runsOut, false);
+    assert.equal(f.forecast.exhaustsInHours, null);
+    assert.ok(Math.abs(f.forecast.shapedEndPercent - 70) < 0.5);
+  });
+
+  test('runsOut follows the weekday-shaped projection, not the linear one', () => {
+    // History burns only on Wednesdays; it is Wednesday noon with 3 days to the reset.
+    const now = Date.parse('2026-07-08T12:00:00Z');
+    const daily = {};
+    for (let i = 1; i <= 28; i++) daily[day(now - i * DAY)] = new Date(now - i * DAY).getUTCDay() === 3 ? 1000 : 0;
+    const points = [{ t: now - 20 * HOUR, v: 25 }, { t: now, v: 50 }]; // 30 pts/day
+    const f = weekForecast(points, now + 3 * DAY, daily, now);
+    assert.ok(f.stats.exhaustsInH < f.stats.remainH, 'the linear burn would run out');
+    assert.equal(f.forecast.runsOut, false);
+    assert.equal(f.forecast.exhaustsInHours, null);
+    // At most the rest of today burns (a full local day at UTC-12): 50 + 30.
+    assert.ok(f.forecast.shapedEndPercent <= 80, `got ${f.forecast.shapedEndPercent}`);
   });
 });
 

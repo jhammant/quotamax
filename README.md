@@ -59,7 +59,10 @@ npm install -g quotamax   # or: npx quotamax
 Requires Node ≥ 18 and a signed-in Claude Code installation (the OAuth token is
 read from the macOS Keychain or `~/.claude/.credentials.json`; override with
 `CLAUDE_CODE_OAUTH_TOKEN`). The token is used read-only against Anthropic's
-usage endpoint and is never logged or stored.
+usage endpoint and is never logged or stored. Inside a `claude-work` session
+(`CLAUDE_WORK_ACCOUNT=1`), `CLAUDE_CODE_OAUTH_TOKEN` holds the second account's
+inference-only token, so quotamax ignores it and reads the main account from
+the Keychain or credentials file.
 
 ## Commands
 
@@ -200,9 +203,18 @@ can I push right now?*
     "thinkingEffort": "high",
     "rationale": "session window 39% used (resets in 143m); weekly 58% used, 12 pts behind linear pace with 5.7d to reset"
   },
+  "forecast": { "runsOut": false, "shapedEndPercent": 86.4, "exhaustsInHours": null },
   "backstop": { "provider": "deepseek", "available": true, "balanceUsd": 50, "low": false }
 }
 ```
+
+- **forecast**: the weekday-aware week forecast `quotamax trend` draws, on
+  real usage (reservations excluded). `shapedEndPercent` is where the weekly
+  quota ends up at the reset if the rest of the week follows your usual
+  rhythm; `runsOut` is true when that projection reaches 100% before the
+  reset, and `exhaustsInHours` says when (`null` if it doesn't). It reads
+  your transcripts (about a second), so `--line` and `--quiet` skip it; it is
+  `null` if the forecast can't be computed.
 
 - **backstop**: the DeepSeek prepaid credit pool, exposed so a router can
   send overflow work there when `headroom` is `constrained`/`critical`.

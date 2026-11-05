@@ -21,7 +21,7 @@ import { deepseekProvider, backstopEntry } from './providers/deepseek.mjs';
 import { ACCOUNT_ID, runProbe, limitsFromRateLimitInfo } from './providers/claude-account.mjs';
 import { readSnapshots, loadConfig, accountLabel } from './store.mjs';
 import { loadUsage, byDayModel, dailyOutput } from './transcripts.mjs';
-import { burnStats, metricsFor, renderChart, usageComparison, sparkline, weekdayProfile, shapedProjection, todayVsTypical } from './trends.mjs';
+import { metricsFor, renderChart, usageComparison, sparkline, weekForecast, todayVsTypical } from './trends.mjs';
 import { costUSD, fmtUSD, fmtTokens, priceFor } from './pricing.mjs';
 import { advise, exitCodeFor } from './agent.mjs';
 import {
@@ -112,6 +112,14 @@ function weekPoints(quota) {
   return { points, resetMs };
 }
 
+// This week's snapshots plus per-day output tokens from the transcripts, run
+// through the weekday-aware forecast. `trend` draws it; `agent` carries it.
+async function forecastFor(quota, now, log = () => {}) {
+  const { points, resetMs } = weekPoints(quota);
+  const daily = dailyOutput(await loadUsage({ log }));
+  return { points, resetMs, daily, ...weekForecast(points, resetMs, daily, now) };
+}
+
 async function status() {
   const quota = await getQuota();
   const m = metricsFor(quota);
@@ -173,13 +181,9 @@ async function probe() {
 async function trend() {
   const quota = await getQuota();
   const now = Date.now();
-  const { points, resetMs } = weekPoints(quota);
-  const s = burnStats(points, resetMs, now);
-  const cache = await loadUsage({ log: asJson ? () => {} : (msg) => console.log(`  [${msg}]`) });
-  const daily = dailyOutput(cache);
+  const log = asJson ? () => {} : (msg) => console.log(`  [${msg}]`);
+  const { points, resetMs, daily, stats: s, intensity, shapedEnd } = await forecastFor(quota, now, log);
   const cmp = usageComparison(daily, resetMs, now);
-  const intensity = weekdayProfile(daily, now);
-  const shapedEnd = shapedProjection(s.current, s.ratePerDay, intensity, now, resetMs);
 
   if (asJson) {
     console.log(JSON.stringify({ quota, stats: s, comparison: cmp, weekdayIntensity: intensity, shapedProjectedEnd: shapedEnd }, null, 2));
@@ -324,10 +328,22 @@ async function agent() {
     // One-shot: `quotamax agent constrained` forces the level for this call only.
     const oneShot = args.filter((a) => !a.startsWith('--'))[1];
     const override = ADVICE_BY_LEVEL[oneShot] ? { level: oneShot } : activeOverride(pri);
-    payload = advise(await getQuota(), Date.now(), reservedPercent(pri), override);
+    const quota = await getQuota();
+    const now = Date.now();
+    payload = advise(quota, now, reservedPercent(pri), override);
     payload.label = accountLabel('claude', 'Claude');
     payload.reservations = activeReservations(pri);
     payload.priorities = pri.priorities;
+    // The trend forecast, on real usage (reservations excluded). It reads the
+    // transcripts (~1s), so the --line hook and --quiet, which never print it,
+    // skip it.
+    if (!flags.has('--line') && !flags.has('--quiet')) {
+      try {
+        payload.forecast = (await forecastFor(quota, now)).forecast;
+      } catch {
+        payload.forecast = null;
+      }
+    }
     // DeepSeek credit is the backstop pool: surfaced so callers can route
     // overflow work to it, but never fed into the headroom/advice math.
     try {

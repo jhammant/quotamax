@@ -121,25 +121,62 @@ export function weekdayProfile(dailyOut, nowMs = Date.now(), weeks = 8) {
 }
 
 /**
- * Week-end projection that walks the remaining days weighting the burn rate
- * by each weekday's observed intensity. With a flat profile this equals the
- * linear projection.
+ * Walks the remaining days to the reset, weighting the burn rate by each
+ * weekday's observed intensity. Returns the projected end percent and the
+ * moment the walk reaches 100% (null if it doesn't before the reset).
  */
-export function shapedProjection(current, ratePerDay, intensity, nowMs, resetsAtMs) {
+export function shapedWalk(current, ratePerDay, intensity, nowMs, resetsAtMs) {
   const todayIntensity = intensity[new Date(nowMs).getDay()];
   // The observed recent rate happened on today's kind of day; normalize it.
   const base = todayIntensity > 0.1 ? ratePerDay / todayIntensity : ratePerDay;
   let v = current;
   let t = nowMs;
+  let exhaustsAtMs = current >= 100 ? nowMs : null;
   while (t < resetsAtMs && v < 100) {
     const d = new Date(t);
     const endOfDay = new Date(d);
     endOfDay.setHours(24, 0, 0, 0);
     const chunkEnd = Math.min(endOfDay.getTime(), resetsAtMs);
-    v += base * intensity[d.getDay()] * ((chunkEnd - t) / (24 * HOUR));
+    const rate = base * intensity[d.getDay()];
+    const next = v + rate * ((chunkEnd - t) / (24 * HOUR));
+    if (next >= 100) exhaustsAtMs = t + ((100 - v) / rate) * 24 * HOUR;
+    v = next;
     t = chunkEnd;
   }
-  return Math.min(100, v);
+  if (exhaustsAtMs != null && exhaustsAtMs >= resetsAtMs) exhaustsAtMs = null;
+  return { endPercent: Math.min(100, v), exhaustsAtMs };
+}
+
+/**
+ * Week-end projection that walks the remaining days weighting the burn rate
+ * by each weekday's observed intensity. With a flat profile this equals the
+ * linear projection.
+ */
+export function shapedProjection(current, ratePerDay, intensity, nowMs, resetsAtMs) {
+  return shapedWalk(current, ratePerDay, intensity, nowMs, resetsAtMs).endPercent;
+}
+
+/**
+ * The week forecast `quotamax trend` draws, from this week's weekly-% points
+ * and per-day output tokens: linear burn stats, the weekday rhythm, and the
+ * rhythm-shaped projection to the reset. `forecast` is the compact form
+ * `quotamax agent --json` carries.
+ */
+export function weekForecast(points, resetsAtMs, dailyOut, nowMs) {
+  const stats = burnStats(points, resetsAtMs, nowMs);
+  const intensity = weekdayProfile(dailyOut, nowMs);
+  const walk = shapedWalk(stats.current, stats.ratePerDay, intensity, nowMs, resetsAtMs);
+  const exhaustsInHours = walk.exhaustsAtMs == null ? null : Math.max(0, (walk.exhaustsAtMs - nowMs) / HOUR);
+  return {
+    stats,
+    intensity,
+    shapedEnd: walk.endPercent,
+    forecast: {
+      runsOut: exhaustsInHours != null,
+      shapedEndPercent: Number(walk.endPercent.toFixed(1)),
+      exhaustsInHours: exhaustsInHours == null ? null : Number(exhaustsInHours.toFixed(1)),
+    },
+  };
 }
 
 /** Today's output tokens vs the average of the same weekday in history. */
