@@ -2,7 +2,8 @@
 // quotamax — Claude Code quota intelligence (+ other coding-agent pools).
 //
 //   quotamax [status]     live limits, pace, projections (+ other pools if present)
-//   quotamax providers    just the non-Claude pools: Codex (ChatGPT) + Kimi Code + DeepSeek credit
+//   quotamax providers    the other pools: Claude (work) + Codex (ChatGPT) + Kimi Code + DeepSeek credit
+//   quotamax probe claude-work   take a fresh reading of the second Claude account (~10 s)
 //   quotamax trend        ASCII burn-up chart + week forecast + baseline
 //   quotamax history      daily/weekly usage and API-cost history
 //   quotamax costs        what your usage would cost as API traffic
@@ -17,6 +18,7 @@ import { spawn } from 'node:child_process';
 import { getQuota } from './quota.mjs';
 import { getOtherProviders } from './providers/index.mjs';
 import { deepseekProvider, backstopEntry } from './providers/deepseek.mjs';
+import { ACCOUNT_ID, runProbe, limitsFromRateLimitInfo } from './providers/claude-account.mjs';
 import { readSnapshots, loadConfig } from './store.mjs';
 import { loadUsage, byDayModel, dailyOutput } from './transcripts.mjs';
 import { burnStats, metricsFor, renderChart, usageComparison, sparkline, weekdayProfile, shapedProjection, todayVsTypical } from './trends.mjs';
@@ -144,6 +146,28 @@ async function providers() {
   console.log('quotamax — other provider pools\n');
   const lines = renderProviderLines(others, '  ');
   console.log(lines.length ? lines.join('\n') : '  (no other providers found — install codex or kimi-code, or set DEEPSEEK_API_KEY)');
+}
+
+// `quotamax probe claude-work` — one fresh reading of the second Claude
+// account, run synchronously. The provider launches this detached when its
+// reading is older than ten minutes; --quiet keeps that background run silent.
+async function probe() {
+  const target = ownArgs.filter((a) => !a.startsWith('--'))[1] ?? ACCOUNT_ID;
+  if (target !== ACCOUNT_ID) throw new Error(`usage: quotamax probe ${ACCOUNT_ID}`);
+  const quiet = flags.has('--quiet');
+  try {
+    const info = runProbe();
+    const limits = limitsFromRateLimitInfo(info);
+    if (asJson) console.log(JSON.stringify({ ok: true, id: ACCOUNT_ID, status: info.status, limits }, null, 2));
+    else if (!quiet) {
+      console.log(`${ACCOUNT_ID}: ${info.status}`);
+      for (const l of limits) console.log(`  ${l.label}: ${bar(l.percent, 20)}  ${fmtReset(l.resetsAt)}`);
+    }
+  } catch (e) {
+    if (asJson) console.log(JSON.stringify({ ok: false, id: ACCOUNT_ID, error: e.message }, null, 2));
+    else if (!quiet) console.error(`${ACCOUNT_ID}: ${e.message}`);
+    process.exitCode = 1;
+  }
 }
 
 async function trend() {
@@ -427,6 +451,7 @@ try {
     case 'status': await status(); break;
     case 'providers':
     case 'pools': await providers(); break;
+    case 'probe': await probe(); break;
     case 'trend':
     case 'forecast': await trend(); break;
     case 'history': await history(); break;
@@ -499,7 +524,7 @@ try {
       break;
     }
     default:
-      console.log(`Unknown command: ${cmd}\nCommands: status | providers | trend | history | costs | runcost <codex|kimi|claude> [--since <min>] | measure [--json] -- <cmd...> | agent [--quiet|--line] | priorities | reserve <pct> <name> | unreserve <name> | prioritize <name> | deprioritize <name> | pricing <model>\nFlags: --json`);
+      console.log(`Unknown command: ${cmd}\nCommands: status | providers | probe claude-work | trend | history | costs | runcost <codex|kimi|claude> [--since <min>] | measure [--json] -- <cmd...> | agent [--quiet|--line] | priorities | reserve <pct> <name> | unreserve <name> | prioritize <name> | deprioritize <name> | pricing <model>\nFlags: --json`);
       process.exit(1);
   }
 } catch (e) {
