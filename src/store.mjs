@@ -52,4 +52,13 @@ export function loadConfig() {
   }
 }
 
+// Display name for an account, from config.json:
+//   {"accounts": {"claude": {"label": "Claude (me@example.com)"},
+//                 "claude-work": {"label": "Claude (work@example.com)"}}}
+// With two Claude subscriptions, the bare word "Claude" doesn't say which is which.
+export function accountLabel(id, fallback, config = loadConfig()) {
+  const label = config?.accounts?.[id]?.label;
+  return typeof label === 'string' && label.trim() ? label.trim() : fallback;
+}
+
 export { CONFIG as CONFIG_PATH };
