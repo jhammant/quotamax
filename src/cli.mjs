@@ -19,7 +19,7 @@ import { getQuota } from './quota.mjs';
 import { getOtherProviders } from './providers/index.mjs';
 import { deepseekProvider, backstopEntry } from './providers/deepseek.mjs';
 import { ACCOUNT_ID, runProbe, limitsFromRateLimitInfo } from './providers/claude-account.mjs';
-import { readSnapshots, loadConfig } from './store.mjs';
+import { readSnapshots, loadConfig, accountLabel } from './store.mjs';
 import { loadUsage, byDayModel, dailyOutput } from './transcripts.mjs';
 import { burnStats, metricsFor, renderChart, usageComparison, sparkline, weekdayProfile, shapedProjection, todayVsTypical } from './trends.mjs';
 import { costUSD, fmtUSD, fmtTokens, priceFor } from './pricing.mjs';
@@ -120,7 +120,7 @@ async function status() {
     console.log(JSON.stringify({ quota, metrics: m, others }, null, 2));
     return;
   }
-  console.log(`quotamax — plan: ${quota.subscription ?? 'unknown'}${cachedNote(quota)}\n`);
+  console.log(`quotamax — ${accountLabel('claude', 'Claude')} · plan: ${quota.subscription ?? 'unknown'}${cachedNote(quota)}\n`);
   console.log(`  5h session   ${bar(quota.session.percent)}  ${fmtReset(quota.session.resetsAt)}`);
   console.log(`  weekly (all) ${bar(quota.weekly.percent)}  ${fmtReset(quota.weekly.resetsAt)}`);
   for (const s of quota.scoped) {
@@ -185,7 +185,7 @@ async function trend() {
     console.log(JSON.stringify({ quota, stats: s, comparison: cmp, weekdayIntensity: intensity, shapedProjectedEnd: shapedEnd }, null, 2));
     return;
   }
-  console.log(`quotamax — week trend & forecast${cachedNote(quota)}`);
+  console.log(`quotamax — week trend & forecast · ${accountLabel('claude', 'Claude')}${cachedNote(quota)}`);
   console.log(`day ${(s.elapsedH / 24).toFixed(1)} of 7 · resets ${new Date(resetMs).toLocaleString()}\n`);
   console.log(renderChart(points, resetMs, now, s.ratePerDay));
   console.log('');
@@ -325,6 +325,7 @@ async function agent() {
     const oneShot = args.filter((a) => !a.startsWith('--'))[1];
     const override = ADVICE_BY_LEVEL[oneShot] ? { level: oneShot } : activeOverride(pri);
     payload = advise(await getQuota(), Date.now(), reservedPercent(pri), override);
+    payload.label = accountLabel('claude', 'Claude');
     payload.reservations = activeReservations(pri);
     payload.priorities = pri.priorities;
     // DeepSeek credit is the backstop pool: surfaced so callers can route

@@ -19,10 +19,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { STATE_DIR } from '../store.mjs';
+import { STATE_DIR, accountLabel } from '../store.mjs';
 
 export const ACCOUNT_ID = 'claude-work';
-const LABEL = 'Claude (work)';
 export const KEYCHAIN_SERVICE = process.env.QUOTAMAX_CLAUDE_WORK_KEYCHAIN || 'claude-work-oauth';
 export const PROBE_TTL_MS = 10 * 60_000;
 const PROBE_LOCK_MS = 90_000;
@@ -155,7 +154,7 @@ export async function claudeWorkProvider({
   now = Date.now(),
   refresh = refreshInBackground,
 } = {}) {
-  const base = { id: ACCOUNT_ID, label: LABEL };
+  const base = { id: ACCOUNT_ID, label: accountLabel(ACCOUNT_ID, 'Claude (work)') };
   if (!token) {
     return { ...base, configured: false, ok: false, note: 'not set up (run `claude-work login`)', limits: [] };
   }

@@ -169,6 +169,16 @@ with that token (no tools, MCP servers, settings or saved session; about 500
 input tokens). Probes run detached, at most every ten minutes, and readers
 never wait on one; `quotamax probe claude-work` takes one now.
 
+With two Claude accounts, name them in `~/.config/quotamax/config.json` so
+every view (and tools that read quotamax, such as atc) says which is which:
+
+```json
+{"accounts": {"claude": {"label": "Claude (me@example.com)"},
+              "claude-work": {"label": "Claude (work@example.com)"}}}
+```
+
+`quotamax agent --json` carries the main account's name as `label`.
+
 Per-model windows such as the Fable week keep their model as `scope`, so a
 router can gate a Fable arm on that window alone. `quotamax agent --json` also
 lists your main account's per-model windows under `scoped`.
