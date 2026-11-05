@@ -66,7 +66,8 @@ usage endpoint and is never logged or stored.
 | Command | What it shows |
 |---|---|
 | `quotamax` / `quotamax status` | Live 5-hour session + weekly limit bars, reset times, pace vs linear (+ other pools if present) |
-| `quotamax providers` | Just the non-Claude pools: Codex (ChatGPT) + Kimi Code + DeepSeek credit, same view |
+| `quotamax providers` | The other pools: a second Claude subscription, Codex (ChatGPT), Kimi Code, DeepSeek credit, same view |
+| `quotamax probe claude-work` | Take a fresh reading of the second Claude subscription now (~10 s) |
 | `quotamax trend` | ASCII burn-up chart, burn rate, week-end projection (expiry or early exhaustion), usage vs your 3-week baseline |
 | `quotamax history` | Daily sparkline + weekly table of tokens and API-cost equivalents |
 | `quotamax costs` | Per-model API list-price equivalence over 7/30/90 days, with cache-token pricing |
@@ -155,6 +156,22 @@ signed in:
 
 Claude remains the pool that drives `trend`, `costs`, `agent`, and the pacing math;
 the others are surfaced for at-a-glance headroom.
+
+### A second Claude subscription
+
+If a second Claude account runs headless workers through
+[claude-work](https://github.com/jhammant/claude-work), quotamax shows it as the
+`claude-work` pool. Its token is a `claude setup-token` token, which carries
+the `user:inference` scope only, so the usage endpoint quotamax uses for your
+main account refuses it. Instead quotamax reads the `rate_limit_event` that
+Claude Code reports in stream-json output, from a one-turn Haiku probe run
+with that token (no tools, MCP servers, settings or saved session; about 500
+input tokens). Probes run detached, at most every ten minutes, and readers
+never wait on one; `quotamax probe claude-work` takes one now.
+
+Per-model windows such as the Fable week keep their model as `scope`, so a
+router can gate a Fable arm on that window alone. `quotamax agent --json` also
+lists your main account's per-model windows under `scoped`.
 
 ## For agents
 
@@ -254,7 +271,9 @@ Everything runs locally. quotamax only makes authenticated, read-only quota
 requests to the providers described above; run-cost parsing itself never sends
 local log data anywhere. Caches under
 `~/.cache/quotamax` and `~/.local/state/quotamax` contain token *counts* only —
-never message content, never credentials.
+never message content, never credentials. The second Claude account's token
+stays in the Keychain item `claude-work` writes; quotamax passes it to the
+probe through the environment, never on a command line.
 
 ## Related tools
 
