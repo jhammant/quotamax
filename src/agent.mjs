@@ -62,6 +62,15 @@ export function advise(quota, nowMs = Date.now(), reservedPct = 0, override = nu
         : null,
       paceDelta: Number(m.paceDelta.toFixed(1)),
     },
+    // Per-model weekly windows (e.g. Fable), so a router can gate a model's arm
+    // on its own window rather than the account-wide one.
+    scoped: (quota.scoped ?? []).map((s) => ({
+      label: s.label,
+      percentUsed: s.percent,
+      resetsInMinutes: Number.isFinite(Date.parse(s.resetsAt))
+        ? Math.max(0, Math.round((Date.parse(s.resetsAt) - nowMs) / 60e3))
+        : null,
+    })),
     headroom: level,
     advice: { ...advice, rationale },
   };

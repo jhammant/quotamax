@@ -3,7 +3,8 @@
 Quota intelligence for Claude Code subscriptions: live limits, burn-rate
 forecasts, usage history, **API-cost equivalence**, and machine-readable
 capacity advice **for agents** — plus at-a-glance headroom for the other
-coding-agent pools you run alongside it (**Codex** and **Kimi Code**).
+coding-agent pools you run alongside it (**Codex**, **Kimi Code** and
+**DeepSeek** API credit).
 
 Your Max/Pro plan's weekly quota is use-it-or-lose-it. quotamax tells you where
 you stand, where the week is heading, what your usage would have cost as
@@ -58,14 +59,18 @@ npm install -g quotamax   # or: npx quotamax
 Requires Node ≥ 18 and a signed-in Claude Code installation (the OAuth token is
 read from the macOS Keychain or `~/.claude/.credentials.json`; override with
 `CLAUDE_CODE_OAUTH_TOKEN`). The token is used read-only against Anthropic's
-usage endpoint and is never logged or stored.
+usage endpoint and is never logged or stored. Inside a `claude-work` session
+(`CLAUDE_WORK_ACCOUNT=1`), `CLAUDE_CODE_OAUTH_TOKEN` holds the second account's
+inference-only token, so quotamax ignores it and reads the main account from
+the Keychain or credentials file.
 
 ## Commands
 
 | Command | What it shows |
 |---|---|
 | `quotamax` / `quotamax status` | Live 5-hour session + weekly limit bars, reset times, pace vs linear (+ other pools if present) |
-| `quotamax providers` | Just the non-Claude pools: Codex (ChatGPT) + Kimi Code, same bar view |
+| `quotamax providers` | The other pools: a second Claude subscription, Codex (ChatGPT), Kimi Code, DeepSeek credit, same view |
+| `quotamax probe claude-work` | Take a fresh reading of the second Claude subscription now (~10 s) |
 | `quotamax trend` | ASCII burn-up chart, burn rate, week-end projection (expiry or early exhaustion), usage vs your 3-week baseline |
 | `quotamax history` | Daily sparkline + weekly table of tokens and API-cost equivalents |
 | `quotamax costs` | Per-model API list-price equivalence over 7/30/90 days, with cache-token pricing |
@@ -112,7 +117,9 @@ command's exit status is preserved.
 ## Other provider pools
 
 If you also run **Codex** (ChatGPT) or **Kimi Code** (Moonshot) alongside Claude,
-`quotamax status` appends their headroom, and `quotamax providers` shows just them:
+or keep a **DeepSeek** prepaid API balance as the backstop when subscription
+quota runs low, `quotamax status` appends their headroom, and
+`quotamax providers` shows just them:
 
 ```text
 $ quotamax providers
@@ -120,10 +127,12 @@ $ quotamax providers
   ● Codex (ChatGPT pro) weekly: [████░░░░░░░░░░░░░░░░] 21%  resets 25/07, 04:27 (5.2d)
   ● Kimi Code (ADVANCED) 5h window: [██████░░░░░░░░░░░░░░] 31%  resets 19/07, 23:44 (1.0h)
   ● Kimi Code (ADVANCED) weekly:    [███░░░░░░░░░░░░░░░░░] 17%  resets 24/07, 11:44 (4.5d)
+  ● DeepSeek (API credit): $50.00 USD balance
 ```
 
-Both are read **live** from each tool's own usage endpoint and need no extra
-config — a pool simply doesn't appear unless it's installed and signed in:
+Codex and Kimi are read **live** from each tool's own usage endpoint and need
+no extra config — a pool simply doesn't appear unless it's installed and
+signed in:
 
 - **Codex** — read live from `GET https://chatgpt.com/backend-api/wham/usage`
   (the same endpoint the CLI itself polls), using the OAuth token + account id in
@@ -137,9 +146,45 @@ config — a pool simply doesn't appear unless it's installed and signed in:
   are server-authoritative. The token is short-lived and refreshed by the kimi
   CLI, so quotamax caches the last good reading and falls back to it (with an
   age note) if the token has gone stale.
+- **DeepSeek** — read live from `GET https://api.deepseek.com/user/balance`.
+  DeepSeek is prepaid pay-as-you-go credit, not a usage window, so quotamax
+  shows the remaining balance instead of a bar, with a `⚠ low credit` marker
+  once it drops under the threshold. The API key is looked up in order:
+  `DEEPSEEK_API_KEY`, then the macOS Keychain entry `deepseek-api-key`
+  (`security find-generic-password -s deepseek-api-key`), then
+  `~/.config/deepseek/env`. With no key the pool simply shows as not
+  configured. Env vars:
+  - `DEEPSEEK_API_KEY` — the API key (overrides Keychain/env file)
+  - `DEEPSEEK_LOW_BALANCE_USD` — low-credit threshold in USD (default `5`)
 
 Claude remains the pool that drives `trend`, `costs`, `agent`, and the pacing math;
 the others are surfaced for at-a-glance headroom.
+
+### A second Claude subscription
+
+If a second Claude account runs headless workers through
+[claude-work](https://github.com/jhammant/claude-work), quotamax shows it as the
+`claude-work` pool. Its token is a `claude setup-token` token, which carries
+the `user:inference` scope only, so the usage endpoint quotamax uses for your
+main account refuses it. Instead quotamax reads the `rate_limit_event` that
+Claude Code reports in stream-json output, from a one-turn Haiku probe run
+with that token (no tools, MCP servers, settings or saved session; about 500
+input tokens). Probes run detached, at most every ten minutes, and readers
+never wait on one; `quotamax probe claude-work` takes one now.
+
+With two Claude accounts, name them in `~/.config/quotamax/config.json` so
+every view (and tools that read quotamax, such as atc) says which is which:
+
+```json
+{"accounts": {"claude": {"label": "Claude (me@example.com)"},
+              "claude-work": {"label": "Claude (work@example.com)"}}}
+```
+
+`quotamax agent --json` carries the main account's name as `label`.
+
+Per-model windows such as the Fable week keep their model as `scope`, so a
+router can gate a Fable arm on that window alone. `quotamax agent --json` also
+lists your main account's per-model windows under `scoped`.
 
 ## For agents
 
@@ -157,9 +202,26 @@ can I push right now?*
     "modelTier": "top",
     "thinkingEffort": "high",
     "rationale": "session window 39% used (resets in 143m); weekly 58% used, 12 pts behind linear pace with 5.7d to reset"
-  }
+  },
+  "forecast": { "runsOut": false, "shapedEndPercent": 86.4, "exhaustsInHours": null },
+  "backstop": { "provider": "deepseek", "available": true, "balanceUsd": 50, "low": false }
 }
 ```
+
+- **forecast**: the weekday-aware week forecast `quotamax trend` draws, on
+  real usage (reservations excluded). `shapedEndPercent` is where the weekly
+  quota ends up at the reset if the rest of the week follows your usual
+  rhythm; `runsOut` is true when that projection reaches 100% before the
+  reset, and `exhaustsInHours` says when (`null` if it doesn't). It reads
+  your transcripts (about a second), so `--line` and `--quiet` skip it; it is
+  `null` if the forecast can't be computed.
+
+- **backstop**: the DeepSeek prepaid credit pool, exposed so a router can
+  send overflow work there when `headroom` is `constrained`/`critical`.
+  `available` means a key is configured, the balance endpoint answered, the
+  API reports the balance usable and it is above zero; `low` means the
+  balance is under `DEEPSEEK_LOW_BALANCE_USD`. Being credit-based, DeepSeek
+  never affects the `headroom`/`advice` computation.
 
 - **headroom**: `abundant` → burn freely (behind pace, cool session window);
   `comfortable` → normal operation; `constrained` → economize (hot session
@@ -231,7 +293,9 @@ Everything runs locally. quotamax only makes authenticated, read-only quota
 requests to the providers described above; run-cost parsing itself never sends
 local log data anywhere. Caches under
 `~/.cache/quotamax` and `~/.local/state/quotamax` contain token *counts* only —
-never message content, never credentials.
+never message content, never credentials. The second Claude account's token
+stays in the Keychain item `claude-work` writes; quotamax passes it to the
+probe through the environment, never on a command line.
 
 ## Related tools
 

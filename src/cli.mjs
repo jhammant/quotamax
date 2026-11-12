@@ -2,7 +2,8 @@
 // quotamax — Claude Code quota intelligence (+ other coding-agent pools).
 //
 //   quotamax [status]     live limits, pace, projections (+ other pools if present)
-//   quotamax providers    just the non-Claude pools: Codex (ChatGPT) + Kimi Code
+//   quotamax providers    the other pools: Claude (work) + Codex (ChatGPT) + Kimi Code + DeepSeek credit
+//   quotamax probe claude-work   take a fresh reading of the second Claude account (~10 s)
 //   quotamax trend        ASCII burn-up chart + week forecast + baseline
 //   quotamax history      daily/weekly usage and API-cost history
 //   quotamax costs        what your usage would cost as API traffic
@@ -11,13 +12,16 @@
 //   quotamax measure      wrap a command and measure weekly quota movement
 //
 // Global flags: --json (machine output), --quiet (agent: headroom word only), --version
+import { exitAfterFlush } from './exit.mjs';
 import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { getQuota } from './quota.mjs';
 import { getOtherProviders } from './providers/index.mjs';
-import { readSnapshots, loadConfig } from './store.mjs';
+import { deepseekProvider, backstopEntry } from './providers/deepseek.mjs';
+import { ACCOUNT_ID, runProbe, limitsFromRateLimitInfo } from './providers/claude-account.mjs';
+import { readSnapshots, loadConfig, accountLabel } from './store.mjs';
 import { loadUsage, byDayModel, dailyOutput } from './transcripts.mjs';
-import { burnStats, metricsFor, renderChart, usageComparison, sparkline, weekdayProfile, shapedProjection, todayVsTypical } from './trends.mjs';
+import { metricsFor, renderChart, usageComparison, sparkline, weekForecast, todayVsTypical } from './trends.mjs';
 import { costUSD, fmtUSD, fmtTokens, priceFor } from './pricing.mjs';
 import { advise, exitCodeFor } from './agent.mjs';
 import {
@@ -57,13 +61,25 @@ function fmtReset(iso) {
   return `resets ${when} (${h < 48 ? h.toFixed(1) + 'h' : (h / 24).toFixed(1) + 'd'})`;
 }
 
-// Render the non-Claude provider pools (Codex, Kimi) using the same bar/reset
-// styling as the Claude view. `○` = not connected / unreachable, `●` = live.
+// Render the non-Claude provider pools (Codex, Kimi, DeepSeek) using the same
+// bar/reset styling as the Claude view. `○` = not connected / unreachable,
+// `●` = live. Credit-based pools (DeepSeek) get a balance line, not a bar.
 function renderProviderLines(providers, indent = '    ') {
   const out = [];
   for (const p of providers) {
     const live = p.configured && p.ok;
     const dot = live ? '●' : '○';
+    if (p.kind === 'credit') {
+      if (!live || p.balanceUsd == null) {
+        out.push(`${indent}${dot} ${p.label} — ${p.note ?? 'balance unavailable'}`);
+        continue;
+      }
+      const marks = [];
+      if (p.available === false) marks.push('⚠ credit unavailable');
+      if (p.low) marks.push(`⚠ low credit (< $${Number(p.thresholdUsd).toFixed(2)})`);
+      out.push(`${indent}${dot} ${p.label} (API credit): $${p.balanceUsd.toFixed(2)} ${p.currency ?? 'USD'} balance${marks.length ? '  ' + marks.join(' · ') : ''}`);
+      continue;
+    }
     if (!live || !p.limits?.length) {
       out.push(`${indent}${dot} ${p.label} — ${p.note ?? (live ? 'no limits reported' : 'unavailable')}`);
       continue;
@@ -96,6 +112,14 @@ function weekPoints(quota) {
   return { points, resetMs };
 }
 
+// This week's snapshots plus per-day output tokens from the transcripts, run
+// through the weekday-aware forecast. `trend` draws it; `agent` carries it.
+async function forecastFor(quota, now, log = () => {}) {
+  const { points, resetMs } = weekPoints(quota);
+  const daily = dailyOutput(await loadUsage({ log }));
+  return { points, resetMs, daily, ...weekForecast(points, resetMs, daily, now) };
+}
+
 async function status() {
   const quota = await getQuota();
   const m = metricsFor(quota);
@@ -104,7 +128,7 @@ async function status() {
     console.log(JSON.stringify({ quota, metrics: m, others }, null, 2));
     return;
   }
-  console.log(`quotamax — plan: ${quota.subscription ?? 'unknown'}${cachedNote(quota)}\n`);
+  console.log(`quotamax — ${accountLabel('claude', 'Claude')} · plan: ${quota.subscription ?? 'unknown'}${cachedNote(quota)}\n`);
   console.log(`  5h session   ${bar(quota.session.percent)}  ${fmtReset(quota.session.resetsAt)}`);
   console.log(`  weekly (all) ${bar(quota.weekly.percent)}  ${fmtReset(quota.weekly.resetsAt)}`);
   for (const s of quota.scoped) {
@@ -118,9 +142,9 @@ async function status() {
   console.log(`\n  run \`quotamax trend\` for the forecast, \`quotamax costs\` for API-cost equivalence`);
 }
 
-// `quotamax providers` — just the non-Claude pools (Codex + Kimi), the same view
-// status appends. Reads Codex from ~/.codex rollout logs and Kimi from its
-// /coding/v1/usages endpoint.
+// `quotamax providers` — just the non-Claude pools (Codex + Kimi + DeepSeek),
+// the same view status appends. Reads Codex from ~/.codex rollout logs, Kimi
+// from its /coding/v1/usages endpoint and DeepSeek from /user/balance.
 async function providers() {
   const others = await getOtherProviders();
   if (asJson) {
@@ -129,25 +153,43 @@ async function providers() {
   }
   console.log('quotamax — other provider pools\n');
   const lines = renderProviderLines(others, '  ');
-  console.log(lines.length ? lines.join('\n') : '  (no other providers found — install codex or kimi-code)');
+  console.log(lines.length ? lines.join('\n') : '  (no other providers found — install codex or kimi-code, or set DEEPSEEK_API_KEY)');
+}
+
+// `quotamax probe claude-work` — one fresh reading of the second Claude
+// account, run synchronously. The provider launches this detached when its
+// reading is older than ten minutes; --quiet keeps that background run silent.
+async function probe() {
+  const target = ownArgs.filter((a) => !a.startsWith('--'))[1] ?? ACCOUNT_ID;
+  if (target !== ACCOUNT_ID) throw new Error(`usage: quotamax probe ${ACCOUNT_ID}`);
+  const quiet = flags.has('--quiet');
+  try {
+    const info = runProbe();
+    const limits = limitsFromRateLimitInfo(info);
+    if (asJson) console.log(JSON.stringify({ ok: true, id: ACCOUNT_ID, status: info.status, limits }, null, 2));
+    else if (!quiet) {
+      console.log(`${ACCOUNT_ID}: ${info.status}`);
+      for (const l of limits) console.log(`  ${l.label}: ${bar(l.percent, 20)}  ${fmtReset(l.resetsAt)}`);
+    }
+  } catch (e) {
+    if (asJson) console.log(JSON.stringify({ ok: false, id: ACCOUNT_ID, error: e.message }, null, 2));
+    else if (!quiet) console.error(`${ACCOUNT_ID}: ${e.message}`);
+    process.exitCode = 1;
+  }
 }
 
 async function trend() {
   const quota = await getQuota();
   const now = Date.now();
-  const { points, resetMs } = weekPoints(quota);
-  const s = burnStats(points, resetMs, now);
-  const cache = await loadUsage({ log: asJson ? () => {} : (msg) => console.log(`  [${msg}]`) });
-  const daily = dailyOutput(cache);
+  const log = asJson ? () => {} : (msg) => console.log(`  [${msg}]`);
+  const { points, resetMs, daily, stats: s, intensity, shapedEnd } = await forecastFor(quota, now, log);
   const cmp = usageComparison(daily, resetMs, now);
-  const intensity = weekdayProfile(daily, now);
-  const shapedEnd = shapedProjection(s.current, s.ratePerDay, intensity, now, resetMs);
 
   if (asJson) {
     console.log(JSON.stringify({ quota, stats: s, comparison: cmp, weekdayIntensity: intensity, shapedProjectedEnd: shapedEnd }, null, 2));
     return;
   }
-  console.log(`quotamax — week trend & forecast${cachedNote(quota)}`);
+  console.log(`quotamax — week trend & forecast · ${accountLabel('claude', 'Claude')}${cachedNote(quota)}`);
   console.log(`day ${(s.elapsedH / 24).toFixed(1)} of 7 · resets ${new Date(resetMs).toLocaleString()}\n`);
   console.log(renderChart(points, resetMs, now, s.ratePerDay));
   console.log('');
@@ -286,9 +328,29 @@ async function agent() {
     // One-shot: `quotamax agent constrained` forces the level for this call only.
     const oneShot = args.filter((a) => !a.startsWith('--'))[1];
     const override = ADVICE_BY_LEVEL[oneShot] ? { level: oneShot } : activeOverride(pri);
-    payload = advise(await getQuota(), Date.now(), reservedPercent(pri), override);
+    const quota = await getQuota();
+    const now = Date.now();
+    payload = advise(quota, now, reservedPercent(pri), override);
+    payload.label = accountLabel('claude', 'Claude');
     payload.reservations = activeReservations(pri);
     payload.priorities = pri.priorities;
+    // The trend forecast, on real usage (reservations excluded). It reads the
+    // transcripts (~1s), so the --line hook and --quiet, which never print it,
+    // skip it.
+    if (!flags.has('--line') && !flags.has('--quiet')) {
+      try {
+        payload.forecast = (await forecastFor(quota, now)).forecast;
+      } catch {
+        payload.forecast = null;
+      }
+    }
+    // DeepSeek credit is the backstop pool: surfaced so callers can route
+    // overflow work to it, but never fed into the headroom/advice math.
+    try {
+      payload.backstop = backstopEntry(await deepseekProvider());
+    } catch {
+      payload.backstop = { provider: 'deepseek', available: false, balanceUsd: null, low: null };
+    }
   } catch (e) {
     payload = { ok: false, error: e.message, headroom: 'unknown', advice: null };
   }
@@ -304,14 +366,14 @@ async function agent() {
         `Claude quota headroom: ${payload.headroom} — cap parallel subagents at ${a.parallelism}, model tier ${a.modelTier}, thinking ${a.thinkingEffort} (session ${payload.session.percentUsed}%, weekly ${payload.weekly.percentUsed}%${res}, resets in ${d}d)`,
       );
     }
-    process.exit(0);
+    return exitAfterFlush(0);
   }
   if (flags.has('--quiet')) {
     console.log(payload.headroom);
   } else {
     console.log(JSON.stringify(payload, null, asJson ? 0 : 2));
   }
-  process.exit(payload.ok ? exitCodeFor(payload.headroom) : 5);
+  exitAfterFlush(payload.ok ? exitCodeFor(payload.headroom) : 5);
 }
 
 function optionNumber(name, fallback) {
@@ -406,6 +468,7 @@ try {
     case 'status': await status(); break;
     case 'providers':
     case 'pools': await providers(); break;
+    case 'probe': await probe(); break;
     case 'trend':
     case 'forecast': await trend(); break;
     case 'history': await history(); break;
@@ -478,7 +541,7 @@ try {
       break;
     }
     default:
-      console.log(`Unknown command: ${cmd}\nCommands: status | providers | trend | history | costs | runcost <codex|kimi|claude> [--since <min>] | measure [--json] -- <cmd...> | agent [--quiet|--line] | priorities | reserve <pct> <name> | unreserve <name> | prioritize <name> | deprioritize <name> | pricing <model>\nFlags: --json`);
+      console.log(`Unknown command: ${cmd}\nCommands: status | providers | probe claude-work | trend | history | costs | runcost <codex|kimi|claude> [--since <min>] | measure [--json] -- <cmd...> | agent [--quiet|--line] | priorities | reserve <pct> <name> | unreserve <name> | prioritize <name> | deprioritize <name> | pricing <model>\nFlags: --json`);
       process.exit(1);
   }
 } catch (e) {

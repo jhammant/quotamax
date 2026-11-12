@@ -2,8 +2,16 @@
 // calls GET https://api.kimi.com/coding/v1/usages (plural) with the OAuth bearer
 // token, returning a weekly window (`usage`) and rate windows (`limits[]`, the
 // 5-hour one has window.duration=300min). Server-authoritative (agrees across
-// machines). The access token is short-lived (~15min) and refreshed by the kimi
-// CLI, so on a stale-token 401 we fall back to the last good reading with an age.
+// machines).
+//
+// The access token is SHORT-LIVED (~15 min, `expires_in: 900`) and is only
+// refreshed when the kimi CLI itself runs. So unless you've used kimi in the
+// last quarter of an hour, a live read will 401. We therefore:
+//   1. check `expires_at` before spending a request we know will fail,
+//   2. fall back to the last good reading — but ONLY while its windows are
+//      still open. A cached percentage whose reset time has passed is
+//      meaningless (the server has rolled the window over, possibly many
+//      times), so it must never be rendered as a live bar.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,6 +41,14 @@ export function limitsFromUsages(data) {
   return out.filter((l) => l.percent != null);
 }
 
+// A cached reading is only meaningful while its windows are still open. Once a
+// window's reset has passed, the server has started a new one and the stored
+// percentage describes a period that no longer exists — drop it rather than
+// draw a bar from it.
+export function openLimits(limits, now = Date.now()) {
+  return (limits ?? []).filter((l) => l.resetsAt == null || Date.parse(l.resetsAt) > now);
+}
+
 function readCache() {
   try {
     return JSON.parse(fs.readFileSync(CACHE, 'utf8'));
@@ -48,13 +64,49 @@ function writeCache(data) {
   }
 }
 
-export async function kimiProvider() {
-  let tok;
+function readCreds() {
   try {
-    tok = JSON.parse(fs.readFileSync(CREDS, 'utf8')).access_token;
+    return JSON.parse(fs.readFileSync(CREDS, 'utf8'));
   } catch {
-    tok = null;
+    return null;
   }
+}
+
+const label = (lvl) => `Kimi Code${lvl ? ' (' + lvl.replace(/^LEVEL_/, '') + ')' : ''}`;
+
+// Shared fallback: serve the last good reading, but only the windows that are
+// still open. If none are, say so plainly instead of showing stale numbers.
+function fromCache(reason) {
+  const c = readCache();
+  if (!c?.data) {
+    return { id: 'kimi', label: 'Kimi Code', configured: true, ok: false, note: reason, limits: [] };
+  }
+  const ageM = Math.round((Date.now() - Date.parse(c.at)) / 60000);
+  const age = ageM >= 120 ? `${Math.round(ageM / 60)}h` : `${ageM}m`;
+  const open = openLimits(limitsFromUsages(c.data));
+  if (open.length === 0) {
+    return {
+      id: 'kimi',
+      label: label(c.data?.user?.membership?.level),
+      configured: true,
+      ok: false,
+      note: `usage unavailable — last reading ${age} old, its windows have since reset (${reason})`,
+      limits: [],
+    };
+  }
+  return {
+    id: 'kimi',
+    label: label(c.data?.user?.membership?.level),
+    configured: true,
+    ok: true,
+    note: `usage as of ${age} ago (${reason})`,
+    limits: open,
+  };
+}
+
+export async function kimiProvider() {
+  const creds = readCreds();
+  const tok = creds?.access_token ?? null;
   if (!tok) {
     return {
       id: 'kimi',
@@ -66,7 +118,14 @@ export async function kimiProvider() {
     };
   }
 
-  const label = (lvl) => `Kimi Code${lvl ? ' (' + lvl.replace(/^LEVEL_/, '') + ')' : ''}`;
+  // `expires_at` is unix SECONDS. If it has passed, the request is guaranteed to
+  // 401 — skip it and report precisely how stale the token is.
+  const expSec = Number(creds?.expires_at);
+  if (Number.isFinite(expSec) && expSec * 1000 <= Date.now()) {
+    const mins = Math.round((Date.now() - expSec * 1000) / 60000);
+    return fromCache(`token expired ${mins}m ago — run any \`kimi\` command to refresh`);
+  }
+
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 6000);
@@ -77,40 +136,8 @@ export async function kimiProvider() {
       writeCache(data);
       return { id: 'kimi', label: label(data?.user?.membership?.level), configured: true, ok: true, limits: limitsFromUsages(data) };
     }
-    // stale/expired token (or other) → fall back to last good reading
-    const c = readCache();
-    if (c?.data) {
-      const ageM = Math.round((Date.now() - Date.parse(c.at)) / 60000);
-      return {
-        id: 'kimi',
-        label: label(c.data?.user?.membership?.level),
-        configured: true,
-        ok: true,
-        note: `usage as of ${ageM}m ago (token stale — run any kimi cmd to refresh)`,
-        limits: limitsFromUsages(c.data),
-      };
-    }
-    return {
-      id: 'kimi',
-      label: 'Kimi Code',
-      configured: true,
-      ok: false,
-      note: r.status === 401 ? 'token expired — run any `kimi` command to refresh' : `usages HTTP ${r.status}`,
-      limits: [],
-    };
+    return fromCache(r.status === 401 ? 'token rejected — run any `kimi` command to refresh' : `usages HTTP ${r.status}`);
   } catch (e) {
-    const c = readCache();
-    if (c?.data) {
-      const ageM = Math.round((Date.now() - Date.parse(c.at)) / 60000);
-      return {
-        id: 'kimi',
-        label: label(c.data?.user?.membership?.level),
-        configured: true,
-        ok: true,
-        note: `usage as of ${ageM}m ago (offline: ${e.name})`,
-        limits: limitsFromUsages(c.data),
-      };
-    }
-    return { id: 'kimi', label: 'Kimi Code', configured: true, ok: false, note: `read error: ${e.message}`, limits: [] };
+    return fromCache(`offline: ${e.name}`);
   }
 }
